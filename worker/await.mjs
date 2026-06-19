@@ -72,7 +72,7 @@ Options:
 
 Exit codes:
   0    reviewed, no P0/P1
-  2    reviewed, but p0 || p1 > 0
+  2    reviewed with P0/P1 blockers (or counts unparseable — read the review)
   3    failed
   124  timeout (prints last-known state)
   1    usage / connection error
@@ -184,6 +184,10 @@ function resultJson(row, status) {
     p0: row?.p0 ?? null,
     p1: row?.p1 ?? null,
     p2: row?.p2 ?? null,
+    // Surface the failure reason on a `failed` row (set by the worker's `finish`);
+    // null on success/timeout. `report` is included when present for diagnostics.
+    error: row?.error ?? null,
+    report: row?.report ?? null,
     finishedAt: row?.finishedAt ?? null,
   }
 }
@@ -210,8 +214,11 @@ function onRow(row) {
   }
 
   if (row.status === "reviewed") {
+    // p0/p1 are best-effort scraped (worker parseReport); undefined ≠ 0. Treat an
+    // unparseable count as a blocker so a parse miss never reports "clean".
+    const unknown = row.p0 == null || row.p1 == null
     const hasBlockers = (row.p0 ?? 0) > 0 || (row.p1 ?? 0) > 0
-    settle(row, "reviewed", hasBlockers ? 2 : 0)
+    settle(row, "reviewed", unknown || hasBlockers ? 2 : 0)
   } else if (row.status === "failed") {
     settle(row, "failed", 3)
   }

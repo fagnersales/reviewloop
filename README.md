@@ -145,10 +145,16 @@ Exit codes (so a caller can branch without parsing the JSON):
 | code | meaning |
 | --- | --- |
 | `0` | reviewed, no P0/P1 |
-| `2` | reviewed, but `p0 \|\| p1 > 0` (blockers — read the review) |
-| `3` | failed |
+| `2` | reviewed with blockers — `p0 \|\| p1 > 0`, **or** the counts were unparseable (`null`); either way, read the review |
+| `3` | failed (`error` in the JSON carries the reason) |
 | `124` | timed out (prints last-known state) |
 | `1` | usage / connection error |
+
+**Branch on the exit code, not `.status`.** On `--timeout` the JSON `status`
+reflects the last-known state (e.g. `"reviewing"`), not `"timeout"` — only the
+exit code (`124`) tells you it gave up. And if a PR is closed while its review is
+still `queued`, the row is removed and `await` blocks until `--timeout` (exit
+`124`) rather than exiting early.
 
 If no row appears within ~60s it warns once to stderr (worker down? webhook not
 wired for this repo?) and keeps waiting until `--timeout`.
