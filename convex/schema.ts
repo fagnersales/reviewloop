@@ -65,5 +65,5 @@ export default defineSchema({
   watchedRepos: defineTable({
     repo: v.string(),
     updatedAt: v.number(),
-  }).index("by_repo", ["repo"]),
+  }),
 })

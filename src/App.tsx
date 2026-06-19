@@ -791,16 +791,20 @@ export default function App() {
 
   const handleRemoveRepo = (repo: string) => {
     setRemoveError(null)
-    void removeRepo({ repo }).catch(() => {
-      setRemoveError(`Couldn’t remove ${repoShort(repo)} — try again`)
-    })
-    // Stay on the repo if it still has reviews (its segment remains); only fall
-    // back to All when removing it makes it disappear entirely. Repo slugs are
-    // case-insensitive, so compare on lower-case.
+    // Repo slugs are case-insensitive, so compare on lower-case. Only fall
+    // back to All once removal actually succeeds and the segment would
+    // disappear (no reviews keep it visible) — a failed remove must not
+    // navigate away from a repo that's still watched and present.
     const key = repo.toLowerCase()
-    if (activeRepo.toLowerCase() === key && !(prsData ?? []).some((p) => p.repo.toLowerCase() === key)) {
-      setActiveRepo("all")
-    }
+    const wouldDisappear =
+      activeRepo.toLowerCase() === key && !(prsData ?? []).some((p) => p.repo.toLowerCase() === key)
+    void removeRepo({ repo })
+      .then(() => {
+        if (wouldDisappear) setActiveRepo("all")
+      })
+      .catch(() => {
+        setRemoveError(`Couldn’t remove ${repoShort(repo)} — try again`)
+      })
   }
 
   const repoFiltered = useMemo(() => {
