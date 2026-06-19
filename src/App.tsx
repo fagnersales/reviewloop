@@ -283,6 +283,7 @@ function RepoSegmented({
   onRepoChange,
   onAdd,
   onRemove,
+  removeError,
 }: {
   repos: string[]
   prs: Pr[]
@@ -290,6 +291,7 @@ function RepoSegmented({
   onRepoChange: (repo: string) => void
   onAdd: (repo: string) => Promise<AddResult>
   onRemove: (repo: string) => void
+  removeError: string | null
 }) {
   const [adding, setAdding] = useState(false)
   const [value, setValue] = useState("")
@@ -418,6 +420,12 @@ function RepoSegmented({
         >
           <Plus className="size-3.5" />
         </button>
+      )}
+
+      {removeError && (
+        <span className="text-xs text-red-300" role="alert">
+          {removeError}
+        </span>
       )}
     </div>
   )
@@ -549,11 +557,21 @@ function ReviewReport({ report }: { report: string }) {
   )
 }
 
-function ReviewDetail({ pr, compact }: { pr: Pr | null; compact: boolean }) {
+function ReviewDetail({
+  pr,
+  compact,
+  hasPrs,
+}: {
+  pr: Pr | null
+  compact: boolean
+  hasPrs: boolean
+}) {
   if (!pr) {
     return (
       <section className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-5 text-sm text-zinc-500">
-        Select a PR to see its review history.
+        {hasPrs
+          ? "Select a PR to see its review history."
+          : "No reviews yet. Reviews will appear here once the worker reviews a PR on a watched repo."}
       </section>
     )
   }
@@ -648,6 +666,7 @@ function ReviewConsole({
   onSelect,
   onAddRepo,
   onRemoveRepo,
+  removeError,
 }: {
   allPrs: Pr[]
   repoFiltered: Pr[]
@@ -659,6 +678,7 @@ function ReviewConsole({
   onSelect: (key: string) => void
   onAddRepo: (repo: string) => Promise<AddResult>
   onRemoveRepo: (repo: string) => void
+  removeError: string | null
 }) {
   const [query, setQuery] = useState("")
   const trimmed = query.trim().toLowerCase()
@@ -681,6 +701,7 @@ function ReviewConsole({
           onRepoChange={onRepoChange}
           onAdd={onAddRepo}
           onRemove={onRemoveRepo}
+          removeError={removeError}
         />
       </div>
 
@@ -722,7 +743,7 @@ function ReviewConsole({
             />
           </div>
         </section>
-        <ReviewDetail pr={selectedPr} compact={compact} />
+        <ReviewDetail pr={selectedPr} compact={compact} hasPrs={allPrs.length > 0} />
       </div>
     </div>
   )
@@ -735,6 +756,7 @@ export default function App() {
   const removeRepo = useMutation(api.repos.remove)
   const [activeRepo, setActiveRepo] = useState("all")
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [removeError, setRemoveError] = useState<string | null>(null)
   const isNarrow = useIsNarrowViewport()
   const compact = isNarrow
 
@@ -745,7 +767,10 @@ export default function App() {
     })
 
   const handleRemoveRepo = (repo: string) => {
-    void removeRepo({ repo }).catch(() => undefined)
+    setRemoveError(null)
+    void removeRepo({ repo }).catch(() => {
+      setRemoveError(`Couldn’t remove ${repoShort(repo)} — try again`)
+    })
     // Stay on the repo if it still has reviews (its segment remains); only fall
     // back to All when removing it makes it disappear entirely.
     if (activeRepo === repo && !(prsData ?? []).some((p) => p.repo === repo)) {
@@ -796,7 +821,7 @@ export default function App() {
             <Loader2 className="size-4 animate-spin" />
             Loading reviews…
           </div>
-        ) : prs.length === 0 ? (
+        ) : repos.length === 0 && prs.length === 0 ? (
           <div className="flex min-h-[60vh] flex-col items-center justify-center gap-2 text-center text-sm text-zinc-500">
             <GitPullRequest className="size-6 text-zinc-700" />
             <div>No reviews yet.</div>
@@ -816,6 +841,7 @@ export default function App() {
             onSelect={setSelectedKey}
             onAddRepo={handleAddRepo}
             onRemoveRepo={handleRemoveRepo}
+            removeError={removeError}
           />
         )}
       </main>

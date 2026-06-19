@@ -2,11 +2,18 @@ import { v } from "convex/values"
 import { mutation, query } from "./_generated/server"
 import type { QueryCtx } from "./_generated/server"
 
+// GitHub repo slugs are case-insensitive ("Vercel/Next.js" === "vercel/next.js"),
+// so we match case-insensitively to avoid duplicate watch entries. We still store
+// and display the repo with its original casing (the dashboard filter compares it
+// against `reviews.repo`, which carries GitHub's canonical casing).
+//
+// `watchedRepos` is config-scale (a handful of rows owned by the dashboard/worker),
+// so a full `.collect()` here is bounded and acceptable — and it keeps the dedup
+// back-compatible with existing rows (no new stored field needed).
 async function getRepoRow(ctx: QueryCtx, repo: string) {
-  return await ctx.db
-    .query("watchedRepos")
-    .withIndex("by_repo", (q) => q.eq("repo", repo))
-    .unique()
+  const target = repo.toLowerCase()
+  const rows = await ctx.db.query("watchedRepos").collect()
+  return rows.find((r) => r.repo.toLowerCase() === target) ?? null
 }
 
 // Worker publishes the repos it's configured to review (from worker/config.json)
