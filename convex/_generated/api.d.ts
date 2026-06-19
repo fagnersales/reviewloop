@@ -10,6 +10,7 @@
 
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
+import type * as repos from "../repos.js";
 import type * as reviews from "../reviews.js";
 
 import type {
@@ -21,6 +22,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   http: typeof http;
+  repos: typeof repos;
   reviews: typeof reviews;
 }>;
 

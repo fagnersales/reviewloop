@@ -69,6 +69,11 @@ let latestClaimable = []
 
 log(`worker "${WORKER}" up; convex=${CONVEX_URL} concurrency=${cfg.concurrency}`)
 
+// publish the watched repos so the dashboard lists them before any review exists
+client
+  .mutation(api.repos.setWatched, { repos: cfg.repos.map((r) => r.repo) })
+  .catch((e) => log("setWatched failed:", String(e)))
+
 // ── run a shell command, capture output ──────────────────────────────────────
 function run(cmd, args, opts = {}) {
   return new Promise((resolve) => {

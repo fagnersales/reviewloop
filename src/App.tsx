@@ -254,15 +254,20 @@ function Section({
 
 export default function App() {
   const board = useQuery(api.reviews.board)
+  const watched = useQuery(api.repos.list)
   const now = useNow(1000)
 
   const reviewing = board?.reviewing ?? []
   const queued = board?.queued ?? []
   const recent = board?.recent ?? []
 
-  const repos = Array.from(
-    new Set([...reviewing, ...queued, ...recent].map((r) => r.repo)),
-  )
+  // prefer the repos the worker says it watches; fall back to repos seen in reviews
+  const repos =
+    watched && watched.length
+      ? watched
+      : Array.from(
+          new Set([...reviewing, ...queued, ...recent].map((r) => r.repo)),
+        )
 
   return (
     <div className="mx-auto max-w-3xl px-5 py-8">

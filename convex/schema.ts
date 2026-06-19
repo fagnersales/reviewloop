@@ -59,4 +59,11 @@ export default defineSchema({
     outcome: v.string(), // enqueued | duplicate | ignored | closed | bad-signature
     receivedAt: v.number(),
   }).index("by_received", ["receivedAt"]),
+
+  // Repos this console is configured to review, published by the worker from
+  // worker/config.json so the dashboard can list them before any PR is reviewed.
+  watchedRepos: defineTable({
+    repo: v.string(),
+    updatedAt: v.number(),
+  }).index("by_repo", ["repo"]),
 })
