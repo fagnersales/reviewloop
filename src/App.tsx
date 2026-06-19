@@ -27,6 +27,7 @@ import { cn } from "./lib/cn"
 import { ago } from "./lib/format"
 
 type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
+type AddResult = "added" | "exists" | "invalid"
 type EventKind = "opened" | "review" | "agent" | "commit" | "merged" | "failed" | "closed"
 
 type TimelineEvent = {
@@ -287,19 +288,39 @@ function RepoSegmented({
   prs: Pr[]
   activeRepo: string
   onRepoChange: (repo: string) => void
-  onAdd: (repo: string) => void
+  onAdd: (repo: string) => Promise<AddResult>
   onRemove: (repo: string) => void
 }) {
   const [adding, setAdding] = useState(false)
   const [value, setValue] = useState("")
+  const [error, setError] = useState<string | null>(null)
   const watched = new Set(repos)
   const repoSet = Array.from(new Set([...repos, ...prs.map((p) => p.repo)])).sort()
 
-  const submit = () => {
+  // Only clear/close on a real add; on invalid/exists keep the input open and
+  // surface why, so the backend's verdict reaches the user instead of vanishing.
+  const submit = async () => {
     const name = value.trim()
     if (!name) return
-    onAdd(name)
+    let result: AddResult
+    try {
+      result = await onAdd(name)
+    } catch {
+      setError("Couldn’t add — try again")
+      return
+    }
+    if (result === "added") {
+      setValue("")
+      setError(null)
+      setAdding(false)
+    } else {
+      setError(result === "exists" ? "Already watched" : "Use owner/name")
+    }
+  }
+
+  const closeAdd = () => {
     setValue("")
+    setError(null)
     setAdding(false)
   }
 
@@ -360,28 +381,32 @@ function RepoSegmented({
       </div>
 
       {adding ? (
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           <input
             autoFocus
             value={value}
-            onChange={(event) => setValue(event.target.value)}
+            onChange={(event) => {
+              setValue(event.target.value)
+              setError(null)
+            }}
             onKeyDown={(event) => {
-              if (event.key === "Enter") submit()
-              if (event.key === "Escape") {
-                setValue("")
-                setAdding(false)
-              }
+              if (event.key === "Enter") void submit()
+              if (event.key === "Escape") closeAdd()
             }}
             placeholder="owner/repo"
-            className="h-8 w-44 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 text-xs text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-500"
+            className={cn(
+              "h-8 w-44 rounded-md border bg-zinc-900 px-2.5 text-xs text-zinc-100 outline-none placeholder:text-zinc-600",
+              error ? "border-red-500/60 focus:border-red-500/60" : "border-zinc-700 focus:border-zinc-500",
+            )}
           />
           <button
             type="button"
-            onClick={submit}
+            onClick={() => void submit()}
             className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-200 hover:border-zinc-500"
           >
             Add
           </button>
+          {error && <span className="text-xs text-red-300">{error}</span>}
         </div>
       ) : (
         <button
@@ -632,7 +657,7 @@ function ReviewConsole({
   compact: boolean
   onRepoChange: (repo: string) => void
   onSelect: (key: string) => void
-  onAddRepo: (repo: string) => void
+  onAddRepo: (repo: string) => Promise<AddResult>
   onRemoveRepo: (repo: string) => void
 }) {
   const [query, setQuery] = useState("")
@@ -713,15 +738,19 @@ export default function App() {
   const isNarrow = useIsNarrowViewport()
   const compact = isNarrow
 
-  const handleAddRepo = (repo: string) => {
-    void addRepo({ repo }).then((result) => {
+  const handleAddRepo = (repo: string) =>
+    addRepo({ repo }).then((result) => {
       if (result === "added") setActiveRepo(repo)
+      return result
     })
-  }
 
   const handleRemoveRepo = (repo: string) => {
-    void removeRepo({ repo })
-    if (activeRepo === repo) setActiveRepo("all")
+    void removeRepo({ repo }).catch(() => undefined)
+    // Stay on the repo if it still has reviews (its segment remains); only fall
+    // back to All when removing it makes it disappear entirely.
+    if (activeRepo === repo && !(prsData ?? []).some((p) => p.repo === repo)) {
+      setActiveRepo("all")
+    }
   }
 
   const repoFiltered = useMemo(() => {
