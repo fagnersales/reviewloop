@@ -10,6 +10,10 @@
     {
       "repo": "fagnersales/roblox-auto-delivery",
       "workdir": "/Users/fagnersales/prototype/roblox-auto-delivery"
+    },
+    {
+      "repo": "fagnersales/prr-console",
+      "workdir": "/Users/fagnersales/prototype/prr-console"
     }
   ]
 }
