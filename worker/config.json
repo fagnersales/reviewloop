@@ -1,0 +1,15 @@
+{
+  "//": "Worker config. convexUrl may be left empty — the worker falls back to VITE_CONVEX_URL in ../.env.local (written by `npx convex dev`). Override any field in config.local.json (gitignored) or via env (PRR_CONVEX_URL, CLAUDE_BIN).",
+  "convexUrl": "",
+  "model": "opus",
+  "concurrency": 3,
+  "claudeBin": "claude",
+  "reviewTimeoutMin": 25,
+  "fallbackReconcileMin": 30,
+  "repos": [
+    {
+      "repo": "fagnersales/roblox-auto-delivery",
+      "workdir": "/Users/fagnersales/prototype/roblox-auto-delivery"
+    }
+  ]
+}

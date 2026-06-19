@@ -1,0 +1,9 @@
+node_modules
+dist
+.env.local
+.DS_Store
+worker/config.local.json
+worker/worker.out
+worker/worker.pid
+worker/logs/
+*.tsbuildinfo
