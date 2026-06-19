@@ -31,6 +31,11 @@ to stdout and exits with a verdict code:
   counts came back unparseable — read the review) · `3` failed (`error` in the
   JSON has the reason) · `124` timeout · `1` usage/connection error.
 
+Exit `3` (failed) is the *last-observed* state, not a final give-up: the worker's
+fallback reconcile (~30 min) re-enqueues open PRs whose only rows for the head SHA
+are `failed`, so if you treat exit `3` as retriable you can just re-run `await` to
+catch the next attempt.
+
 Read the JSON (`reviewUrl`, `p0`/`p1`/`p2`, `confidence`) and the exit code to
 decide what to do next. **Branch on the exit code, not the JSON `status`:** on
 `--timeout` the `status` is the last-known state (e.g. `"reviewing"`), not

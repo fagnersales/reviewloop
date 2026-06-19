@@ -67,7 +67,10 @@ Options:
   --repo <owner/name>  target repo (default: \`gh repo view\` of the cwd)
   --head <sha>         PR head SHA (default: \`gh pr view <pr> --json headRefOid\`)
   --timeout <seconds>  give up after this many seconds (default: 1800)
-  --json               accepted for clarity; stdout is always JSON (no opposite flag)
+  --json               accepted for clarity; it is the default and has no opposite flag.
+                       stdout carries the result JSON only on a terminal outcome
+                       (exit 0/2/3/124); exit 1 (usage/connection/query) prints nothing
+                       to stdout.
   --quiet              suppress the stderr heartbeat
   -h, --help           show this help
 

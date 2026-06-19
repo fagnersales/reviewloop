@@ -130,8 +130,9 @@ git push ──▶ webhook ──▶ reviews row (queued→reviewing→reviewed)
 node worker/await.mjs <pr> --repo owner/name
 # defaults: --repo from `gh repo view`, --head from `gh pr view <pr>`,
 #           --timeout 1800, heartbeat on stderr (--quiet to mute).
-# stdout is always machine-readable JSON; `--json` is accepted for clarity but is
-# the default behavior — there is no `--no-json` opposite flag.
+# stdout carries the result JSON only on a terminal review outcome (exit 0/2/3/124);
+# on exit 1 (usage / connection / query error) nothing is printed to stdout. `--json`
+# is accepted for clarity but is the default behavior — there is no `--no-json` opposite flag.
 ```
 
 Head-SHA keyed, so it waits for the review of *this* push (a re-push enqueues a
@@ -152,9 +153,14 @@ Exit codes (so a caller can branch without parsing the JSON):
 | --- | --- |
 | `0` | reviewed, no P0/P1 |
 | `2` | reviewed with blockers — `p0 \|\| p1 > 0`, **or** the counts were unparseable (`null`); either way, read the review |
-| `3` | failed (`error` in the JSON carries the reason) |
+| `3` | failed (`error` in the JSON carries the reason) — last-observed state, not final |
 | `124` | timed out (prints last-known state) |
 | `1` | usage / connection error |
+
+Exit `3` is the *last-observed* state, not a final give-up: the worker's fallback
+reconcile (~`fallbackReconcileMin`, default 30 min) re-enqueues open PRs whose only
+rows for the head SHA are `failed` (a fresh `queued` row), so a caller treating exit
+`3` as retriable can simply re-run `await` to catch the next attempt.
 
 **Branch on the exit code, not `.status`.** On `--timeout` the JSON `status`
 reflects the last-known state (e.g. `"reviewing"`), not `"timeout"` — only the
