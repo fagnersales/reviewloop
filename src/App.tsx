@@ -584,7 +584,7 @@ function ReviewDetail({
       <section className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-5 text-sm text-zinc-500">
         {hasPrs
           ? "Select a PR to see its review history."
-          : "No reviews yet. Reviews will appear here once the worker reviews a PR on a watched repo."}
+          : "No reviews for this repository yet. Reviews will appear here once the worker reviews a PR on a watched repo."}
       </section>
     )
   }
@@ -756,7 +756,7 @@ function ReviewConsole({
             />
           </div>
         </section>
-        <ReviewDetail pr={selectedPr} compact={compact} hasPrs={allPrs.length > 0} />
+        <ReviewDetail pr={selectedPr} compact={compact} hasPrs={repoFiltered.length > 0} />
       </div>
     </div>
   )
@@ -773,9 +773,19 @@ export default function App() {
   const isNarrow = useIsNarrowViewport()
   const compact = isNarrow
 
+  // Clearing the stale remove banner on any deliberate navigation/add keeps a
+  // failed-remove message from outliving its relevance across unrelated actions.
+  const handleRepoChange = (repo: string) => {
+    setRemoveError(null)
+    setActiveRepo(repo)
+  }
+
   const handleAddRepo = (repo: string) =>
     addRepo({ repo }).then((result) => {
-      if (result === "added") setActiveRepo(repo)
+      if (result === "added") {
+        setRemoveError(null)
+        setActiveRepo(repo)
+      }
       return result
     })
 
@@ -840,14 +850,6 @@ export default function App() {
             <Loader2 className="size-4 animate-spin" />
             Loading reviews…
           </div>
-        ) : repos.length === 0 && prs.length === 0 ? (
-          <div className="flex min-h-[60vh] flex-col items-center justify-center gap-2 text-center text-sm text-zinc-500">
-            <GitPullRequest className="size-6 text-zinc-700" />
-            <div>No reviews yet.</div>
-            <div className="text-xs text-zinc-600">
-              The worker hasn’t reviewed any pull requests on the watched repos.
-            </div>
-          </div>
         ) : (
           <ReviewConsole
             allPrs={prs}
@@ -856,7 +858,7 @@ export default function App() {
             activeRepo={activeRepo}
             selectedPr={selectedPr}
             compact={compact}
-            onRepoChange={setActiveRepo}
+            onRepoChange={handleRepoChange}
             onSelect={setSelectedKey}
             onAddRepo={handleAddRepo}
             onRemoveRepo={handleRemoveRepo}
