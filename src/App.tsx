@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { useQuery } from "convex/react"
+import { useMutation, useQuery } from "convex/react"
 import { type FunctionReturnType } from "convex/server"
 import Markdown from "markdown-to-jsx"
 import {
@@ -15,6 +15,7 @@ import {
   ListFilter,
   Loader2,
   type LucideIcon,
+  Plus,
   Rows3,
   Search,
   Sparkles,
@@ -279,43 +280,120 @@ function RepoSegmented({
   prs,
   activeRepo,
   onRepoChange,
+  onAdd,
+  onRemove,
 }: {
   repos: string[]
   prs: Pr[]
   activeRepo: string
   onRepoChange: (repo: string) => void
+  onAdd: (repo: string) => void
+  onRemove: (repo: string) => void
 }) {
+  const [adding, setAdding] = useState(false)
+  const [value, setValue] = useState("")
+  const watched = new Set(repos)
   const repoSet = Array.from(new Set([...repos, ...prs.map((p) => p.repo)])).sort()
-  const segments = [
-    { id: "all", label: "All", count: prs.length, withIcon: true },
-    ...repoSet.map((repo) => ({
-      id: repo,
-      label: repoShort(repo),
-      count: prs.filter((p) => p.repo === repo).length,
-      withIcon: false,
-    })),
-  ]
+
+  const submit = () => {
+    const name = value.trim()
+    if (!name) return
+    onAdd(name)
+    setValue("")
+    setAdding(false)
+  }
 
   return (
-    <div className="inline-flex max-w-full overflow-x-auto rounded-md border border-zinc-800">
-      {segments.map((segment, index) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="inline-flex max-w-full items-stretch overflow-x-auto rounded-md border border-zinc-800">
         <button
-          key={segment.id}
           type="button"
-          onClick={() => onRepoChange(segment.id)}
+          onClick={() => onRepoChange("all")}
           className={cn(
             "inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition",
-            index > 0 && "border-l border-zinc-800",
-            activeRepo === segment.id
+            activeRepo === "all"
               ? "bg-zinc-800 text-zinc-100"
               : "bg-zinc-950 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200",
           )}
         >
-          {segment.withIcon && <ListFilter className="size-3.5" />}
-          {segment.label}
-          <span className="text-[10px] text-zinc-500">{segment.count}</span>
+          <ListFilter className="size-3.5" />
+          All
+          <span className="text-[10px] text-zinc-500">{prs.length}</span>
         </button>
-      ))}
+        {repoSet.map((repo) => {
+          const active = activeRepo === repo
+          const count = prs.filter((p) => p.repo === repo).length
+          return (
+            <div
+              key={repo}
+              className={cn(
+                "group/seg relative inline-flex shrink-0 items-center border-l border-zinc-800 transition",
+                active ? "bg-zinc-800" : "bg-zinc-950 hover:bg-zinc-900",
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => onRepoChange(repo)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 py-1.5 pl-3 text-xs font-medium transition",
+                  active ? "text-zinc-100" : "text-zinc-400 group-hover/seg:text-zinc-200",
+                  watched.has(repo) ? "pr-1.5" : "pr-3",
+                )}
+              >
+                {repoShort(repo)}
+                <span className="text-[10px] text-zinc-500">{count}</span>
+              </button>
+              {watched.has(repo) && (
+                <button
+                  type="button"
+                  title={`Remove ${repo}`}
+                  aria-label={`Remove ${repo}`}
+                  onClick={() => onRemove(repo)}
+                  className="mr-1.5 rounded p-0.5 text-zinc-600 opacity-0 transition hover:text-zinc-200 focus:opacity-100 group-hover/seg:opacity-100"
+                >
+                  <X className="size-3" />
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {adding ? (
+        <div className="flex items-center gap-1">
+          <input
+            autoFocus
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submit()
+              if (event.key === "Escape") {
+                setValue("")
+                setAdding(false)
+              }
+            }}
+            placeholder="owner/repo"
+            className="h-8 w-44 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 text-xs text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-500"
+          />
+          <button
+            type="button"
+            onClick={submit}
+            className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-200 hover:border-zinc-500"
+          >
+            Add
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          title="Add repository"
+          aria-label="Add repository"
+          onClick={() => setAdding(true)}
+          className="inline-flex items-center justify-center rounded-md border border-zinc-800 bg-zinc-950 p-1.5 text-zinc-500 transition hover:border-zinc-700 hover:text-zinc-200"
+        >
+          <Plus className="size-3.5" />
+        </button>
+      )}
     </div>
   )
 }
@@ -543,6 +621,8 @@ function ReviewConsole({
   compact,
   onRepoChange,
   onSelect,
+  onAddRepo,
+  onRemoveRepo,
 }: {
   allPrs: Pr[]
   repoFiltered: Pr[]
@@ -552,6 +632,8 @@ function ReviewConsole({
   compact: boolean
   onRepoChange: (repo: string) => void
   onSelect: (key: string) => void
+  onAddRepo: (repo: string) => void
+  onRemoveRepo: (repo: string) => void
 }) {
   const [query, setQuery] = useState("")
   const trimmed = query.trim().toLowerCase()
@@ -572,6 +654,8 @@ function ReviewConsole({
           prs={allPrs}
           activeRepo={activeRepo}
           onRepoChange={onRepoChange}
+          onAdd={onAddRepo}
+          onRemove={onRemoveRepo}
         />
       </div>
 
@@ -622,10 +706,23 @@ function ReviewConsole({
 export default function App() {
   const prsData = useQuery(api.reviews.prs)
   const reposData = useQuery(api.repos.list)
+  const addRepo = useMutation(api.repos.add)
+  const removeRepo = useMutation(api.repos.remove)
   const [activeRepo, setActiveRepo] = useState("all")
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const isNarrow = useIsNarrowViewport()
   const compact = isNarrow
+
+  const handleAddRepo = (repo: string) => {
+    void addRepo({ repo }).then((result) => {
+      if (result === "added") setActiveRepo(repo)
+    })
+  }
+
+  const handleRemoveRepo = (repo: string) => {
+    void removeRepo({ repo })
+    if (activeRepo === repo) setActiveRepo("all")
+  }
 
   const repoFiltered = useMemo(() => {
     const all = prsData ?? []
@@ -688,6 +785,8 @@ export default function App() {
             compact={compact}
             onRepoChange={setActiveRepo}
             onSelect={setSelectedKey}
+            onAddRepo={handleAddRepo}
+            onRemoveRepo={handleRemoveRepo}
           />
         )}
       </main>
