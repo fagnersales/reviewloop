@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Blocking "wait for a PR review" CLI: `prr await <pr>`.
+// Blocking "wait for a PR review" CLI: `node worker/await.mjs <pr>`
+// (installed bin: `prr-await <pr>`).
 //
 // Subscribes to the prr-console Convex `reviews` row for one
 // (repo, prNumber, headSha) over the sync websocket and blocks until that row
@@ -51,7 +52,7 @@ const CONVEX_URL = process.env.PRR_CONVEX_URL || cfg.convexUrl || envLocalUrl()
 // codegen hasn't picked it up yet.
 const GET_BY_PR_SHA = api?.reviews?.getByPrSha ?? "reviews:getByPrSha"
 
-const HELP = `prr await — block until a PR's review finishes
+const HELP = `prr-await — block until a PR's review finishes
 
 Usage:
   node worker/await.mjs <pr> [options]
@@ -185,9 +186,8 @@ function resultJson(row, status) {
     p1: row?.p1 ?? null,
     p2: row?.p2 ?? null,
     // Surface the failure reason on a `failed` row (set by the worker's `finish`);
-    // null on success/timeout. `report` is included when present for diagnostics.
+    // null on success/timeout.
     error: row?.error ?? null,
-    report: row?.report ?? null,
     finishedAt: row?.finishedAt ?? null,
   }
 }
@@ -226,9 +226,33 @@ function onRow(row) {
 
 log(`waiting on ${repo}#${prNumber} @${short} (timeout ${opts.timeout}s) · ${CONVEX_URL}`)
 
+// onError: ConvexClient.onUpdate delivers a *server-side* query failure here.
+// Without it the client does `void Promise.reject(error)` → an unhandled
+// rejection that terminates the process. (The try/catch below only catches a
+// synchronous subscribe-time throw.) The most likely cause pre-merge is the
+// query simply not being deployed yet, so we hint that. Exit promptly with 1 —
+// don't let the 60s "worker down" guard be what the user sees.
+async function onQueryError(e) {
+  if (settled) return
+  settled = true
+  clearTimeout(timeoutTimer)
+  clearTimeout(missingTimer)
+  process.stderr.write(
+    `prr await: query error: ${String(e)}\n` +
+      `prr await: (is reviews:getByPrSha deployed? this query is added by the PR — it won't exist until merge)\n`,
+  )
+  await client.close().catch(() => {})
+  process.exit(1)
+}
+
 let unsubscribe
 try {
-  unsubscribe = client.onUpdate(GET_BY_PR_SHA, { repo, prNumber, headSha }, onRow)
+  unsubscribe = client.onUpdate(
+    GET_BY_PR_SHA,
+    { repo, prNumber, headSha },
+    onRow,
+    onQueryError,
+  )
 } catch (e) {
   process.stderr.write(`prr await: failed to subscribe: ${String(e)}\n`)
   await client.close().catch(() => {})

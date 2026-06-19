@@ -108,12 +108,14 @@ default — mirrors how the locator is run manually).
 - Kill the worker mid-review → the `requeue stale reviews` cron flips it back to
   `queued` after ~25 min; restart → it re-claims.
 
-## Waiting for a review (`prr await`)
+## Waiting for a review (`node worker/await.mjs`)
 
 `worker/await.mjs` is a blocking companion to the worker: it subscribes to the
 **one** `reviews` row for a PR's *head commit* and exits the moment that row goes
 **reviewed** / **failed** — no polling, no human in the relay. It's meant to be
 run in the background by an automated caller (Claude Code) right after pushing.
+Invoke it as `node worker/await.mjs <pr>` (or `npm run await -- <pr> …`); the
+installed bin alias is `prr-await <pr>`.
 
 ```
 git push ──▶ webhook ──▶ reviews row (queued→reviewing→reviewed)
@@ -137,8 +139,10 @@ the result JSON to **stdout**:
 ```json
 { "status": "reviewed", "repo": "owner/name", "prNumber": 42, "headSha": "…",
   "reviewUrl": "…", "confidence": 4, "reviewEffort": 3,
-  "p0": 0, "p1": 1, "p2": 2, "finishedAt": 1718800000000 }
+  "p0": 0, "p1": 1, "p2": 2, "error": null, "finishedAt": 1718800000000 }
 ```
+
+(`error` carries the failure reason on a `failed` row; `null` otherwise.)
 
 Exit codes (so a caller can branch without parsing the JSON):
 
