@@ -304,7 +304,7 @@ function RepoSegmented({
   const byKey = new Map<string, string>()
   for (const repo of repos) byKey.set(repo.toLowerCase(), repo)
   for (const pr of prs) byKey.set(pr.repo.toLowerCase(), pr.repo)
-  const repoSet = Array.from(byKey.values()).sort()
+  const repoSet = Array.from(byKey.values()).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
 
   // Only clear/close on a real add; on invalid/exists keep the input open and
   // surface why, so the backend's verdict reaches the user instead of vanishing.
@@ -574,17 +574,21 @@ function ReviewDetail({
   pr,
   compact,
   hasPrs,
+  isAll,
 }: {
   pr: Pr | null
   compact: boolean
   hasPrs: boolean
+  isAll: boolean
 }) {
   if (!pr) {
     return (
       <section className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-5 text-sm text-zinc-500">
         {hasPrs
           ? "Select a PR to see its review history."
-          : "No reviews for this repository yet. Reviews will appear here once the worker reviews a PR on a watched repo."}
+          : isAll
+            ? "No reviews yet. Reviews appear here once the worker reviews a PR on a watched repo."
+            : "No reviews for this repository yet. Reviews will appear here once the worker reviews a PR on a watched repo."}
       </section>
     )
   }
@@ -752,11 +756,17 @@ function ReviewConsole({
               prs={visible}
               selectedKey={selectedPr?.key ?? null}
               onSelect={onSelect}
-              emptyLabel={trimmed ? "No PRs match your search." : "No reviews for this repository yet."}
+              emptyLabel={
+                trimmed
+                  ? "No PRs match your search."
+                  : activeRepo === "all"
+                    ? "No reviews yet."
+                    : "No reviews for this repository yet."
+              }
             />
           </div>
         </section>
-        <ReviewDetail pr={selectedPr} compact={compact} hasPrs={repoFiltered.length > 0} />
+        <ReviewDetail pr={selectedPr} compact={compact} hasPrs={repoFiltered.length > 0} isAll={activeRepo === "all"} />
       </div>
     </div>
   )
