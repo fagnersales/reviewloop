@@ -1,7 +1,8 @@
 import { v } from "convex/values"
 import { mutation, query, internalMutation } from "./_generated/server"
 import type { MutationCtx } from "./_generated/server"
-import { reviewFields } from "./schema"
+import type { Doc } from "./_generated/dataModel"
+import { reviewFields, reviewStatus } from "./schema"
 
 const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed worker
 
@@ -265,5 +266,129 @@ export const board = query({
       .sort((a, b) => (b.finishedAt ?? b.queuedAt) - (a.finishedAt ?? a.queuedAt))
       .slice(0, 30)
     return { reviewing, queued, recent }
+  },
+})
+
+// One review pass = one `reviews` row (one head SHA of a PR).
+const prPass = v.object({
+  _id: v.id("reviews"),
+  headSha: v.string(),
+  status: reviewStatus,
+  queuedAt: v.number(),
+  startedAt: v.optional(v.number()),
+  finishedAt: v.optional(v.number()),
+  confidence: v.optional(v.number()),
+  reviewEffort: v.optional(v.number()),
+  p0: v.optional(v.number()),
+  p1: v.optional(v.number()),
+  p2: v.optional(v.number()),
+  report: v.optional(v.string()),
+  reviewUrl: v.optional(v.string()),
+  progress: v.optional(v.string()),
+  error: v.optional(v.string()),
+  worker: v.optional(v.string()),
+})
+
+// A PR = every review pass for one (repo, prNumber), with the latest pass's
+// state surfaced for the list/header.
+const prDoc = v.object({
+  key: v.string(),
+  repo: v.string(),
+  prNumber: v.number(),
+  title: v.string(),
+  author: v.string(),
+  prUrl: v.string(),
+  headSha: v.string(),
+  status: reviewStatus,
+  prState: v.optional(v.union(v.literal("merged"), v.literal("closed"))),
+  confidence: v.optional(v.number()),
+  p0: v.optional(v.number()),
+  p1: v.optional(v.number()),
+  p2: v.optional(v.number()),
+  progress: v.optional(v.string()),
+  updatedAt: v.number(),
+  passes: v.array(prPass),
+})
+
+// The dashboard subscribes to this: every PR with active or recent review
+// activity, grouped from its per-commit review rows, newest activity first.
+export const prs = query({
+  args: {},
+  returns: v.array(prDoc),
+  handler: async (ctx) => {
+    const reviewing = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "reviewing"))
+      .order("desc")
+      .take(25)
+    const queued = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "queued"))
+      .order("desc")
+      .take(50)
+    const reviewed = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "reviewed"))
+      .order("desc")
+      .take(100)
+    const failed = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "failed"))
+      .order("desc")
+      .take(50)
+
+    const groups = new Map<string, Doc<"reviews">[]>()
+    for (const row of [...reviewing, ...queued, ...reviewed, ...failed]) {
+      const key = `${row.repo}#${row.prNumber}`
+      const arr = groups.get(key)
+      if (arr) arr.push(row)
+      else groups.set(key, [row])
+    }
+
+    const result = []
+    for (const [key, rows] of groups) {
+      // passes oldest-first = the review loop in chronological order
+      rows.sort((a, b) => a.queuedAt - b.queuedAt)
+      const latest = rows[rows.length - 1]
+      const prState = rows.find((r) => r.prState)?.prState
+      result.push({
+        key,
+        repo: latest.repo,
+        prNumber: latest.prNumber,
+        title: latest.title,
+        author: latest.author,
+        prUrl: latest.prUrl,
+        headSha: latest.headSha,
+        status: latest.status,
+        prState,
+        confidence: latest.confidence,
+        p0: latest.p0,
+        p1: latest.p1,
+        p2: latest.p2,
+        progress: latest.progress,
+        updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.queuedAt,
+        passes: rows.map((r) => ({
+          _id: r._id,
+          headSha: r.headSha,
+          status: r.status,
+          queuedAt: r.queuedAt,
+          startedAt: r.startedAt,
+          finishedAt: r.finishedAt,
+          confidence: r.confidence,
+          reviewEffort: r.reviewEffort,
+          p0: r.p0,
+          p1: r.p1,
+          p2: r.p2,
+          report: r.report,
+          reviewUrl: r.reviewUrl,
+          progress: r.progress,
+          error: r.error,
+          worker: r.worker,
+        })),
+      })
+    }
+    // newest PR activity first
+    result.sort((a, b) => b.updatedAt - a.updatedAt)
+    return result
   },
 })

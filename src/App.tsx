@@ -1,583 +1,41 @@
 import { useEffect, useMemo, useState } from "react"
+import { useQuery } from "convex/react"
+import { type FunctionReturnType } from "convex/server"
+import Markdown from "markdown-to-jsx"
 import {
   Activity,
   AlertTriangle,
   CheckCircle2,
   Clock3,
   ExternalLink,
-  GitBranch,
   GitCommit,
   GitMerge,
   GitPullRequest,
+  GitPullRequestClosed,
   ListFilter,
   Loader2,
-  Plus,
+  type LucideIcon,
   Rows3,
   Search,
   Sparkles,
   X,
+  XCircle,
 } from "lucide-react"
+import { api } from "../convex/_generated/api"
 import { cn } from "./lib/cn"
+import { ago } from "./lib/format"
 
-type ProviderKey = "codex" | "claude"
-type ReviewStatus = "reviewing" | "queued" | "mergeable" | "blocked" | "landed"
-type EventKind = "opened" | "review" | "agent" | "commit" | "mergeable" | "blocked"
+type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
+type EventKind = "opened" | "review" | "agent" | "commit" | "merged" | "failed" | "closed"
 
-type Repo = {
-  id: string
-  name: string
-  branch: string
-  active: number
-  queued: number
-  lastSync: string
-}
-
-type ReviewEvent = {
+type TimelineEvent = {
   id: string
   kind: EventKind
   title: string
   body: string
-  time: string
+  time: number
   score?: number
 }
-
-type Review = {
-  id: string
-  repoId: string
-  prNumber: number
-  title: string
-  author: string
-  branch: string
-  status: ReviewStatus
-  provider: ProviderKey
-  model: string
-  round: number
-  score: number
-  progress: number
-  findings: string
-  commits: number
-  checks: string
-  updated: string
-  currentStep: string
-  summary: string
-  nextAction: string
-  events: ReviewEvent[]
-}
-
-const INITIAL_REPOS: Repo[] = [
-  {
-    id: "prr-console",
-    name: "fagnersales/prr-console",
-    branch: "main",
-    active: 3,
-    queued: 1,
-    lastSync: "18s ago",
-  },
-  {
-    id: "billing",
-    name: "acme/billing-platform",
-    branch: "release/2026.06",
-    active: 2,
-    queued: 0,
-    lastSync: "44s ago",
-  },
-  {
-    id: "t3code",
-    name: "pingdotgg/t3code",
-    branch: "main",
-    active: 2,
-    queued: 2,
-    lastSync: "1m ago",
-  },
-]
-
-const REVIEWS: Review[] = [
-  {
-    id: "review-1",
-    repoId: "prr-console",
-    prNumber: 48,
-    title: "Add event timeline for agent review loops",
-    author: "fagner",
-    branch: "feat/review-events",
-    status: "reviewing",
-    provider: "codex",
-    model: "GPT-5 Codex",
-    round: 4,
-    score: 4,
-    progress: 72,
-    findings: "1 P1, 2 P2",
-    commits: 7,
-    checks: "12/13",
-    updated: "23s ago",
-    currentStep: "Codex is checking the latest commit range",
-    summary:
-      "The review started with missing pagination and an unsafe event merge. Two commits landed to normalize timeline ordering, add empty states, and tighten status labels. The current pass is validating mobile behavior before merge.",
-    nextAction: "Wait for final smoke check, then merge if the score stays at 4/5.",
-    events: [
-      {
-        id: "r1-e1",
-        kind: "opened",
-        title: "PR opened",
-        body: "Initial timeline surface with mock GitHub events.",
-        time: "10:14",
-      },
-      {
-        id: "r1-e2",
-        kind: "review",
-        title: "PR reviewed",
-        body: "Found event ordering bug, missing mobile empty state, and vague merge copy.",
-        time: "10:20",
-        score: 3,
-      },
-      {
-        id: "r1-e3",
-        kind: "agent",
-        title: "Agent is working on it",
-        body: "Codex applied focused fixes and kept the timeline contract unchanged.",
-        time: "10:22",
-      },
-      {
-        id: "r1-e4",
-        kind: "commit",
-        title: "Commits landed",
-        body: "3 commits pushed: event sort, mobile detail stack, summary card.",
-        time: "10:31",
-      },
-      {
-        id: "r1-e5",
-        kind: "review",
-        title: "PR reviewed",
-        body: "No blocking defects left. One P2 remains around filter persistence.",
-        time: "10:36",
-        score: 4,
-      },
-      {
-        id: "r1-e6",
-        kind: "agent",
-        title: "Agent is working on it",
-        body: "Final pass is checking the compact viewport and review summary copy.",
-        time: "now",
-      },
-    ],
-  },
-  {
-    id: "review-2",
-    repoId: "billing",
-    prNumber: 183,
-    title: "Reconcile invoice retry state machine",
-    author: "maya",
-    branch: "fix/retry-ledger",
-    status: "blocked",
-    provider: "claude",
-    model: "Claude Sonnet 4.5",
-    round: 2,
-    score: 2,
-    progress: 41,
-    findings: "2 P1, 4 P2",
-    commits: 2,
-    checks: "8/10",
-    updated: "2m ago",
-    currentStep: "Claude Code is waiting on failing retry tests",
-    summary:
-      "The first pass found a duplicated retry transition that could double-charge pending invoices. The agent patched the transition guard, but two tests still fail because the mock ledger now disagrees with production rounding.",
-    nextAction: "Fix the ledger fixture before asking for another agent pass.",
-    events: [
-      {
-        id: "r2-e1",
-        kind: "opened",
-        title: "PR opened",
-        body: "Retry graph moved behind the invoice worker.",
-        time: "09:42",
-      },
-      {
-        id: "r2-e2",
-        kind: "review",
-        title: "PR reviewed",
-        body: "Found double-transition risk and missing idempotency assertion.",
-        time: "09:48",
-        score: 2,
-      },
-      {
-        id: "r2-e3",
-        kind: "agent",
-        title: "Agent is working on it",
-        body: "Claude Code added an idempotency guard and expanded retry tests.",
-        time: "09:51",
-      },
-      {
-        id: "r2-e4",
-        kind: "commit",
-        title: "Commits landed",
-        body: "2 commits pushed. Retry guard is fixed, fixtures still fail.",
-        time: "10:05",
-      },
-      {
-        id: "r2-e5",
-        kind: "blocked",
-        title: "Review blocked",
-        body: "Test fixture mismatch needs a human decision on rounding.",
-        time: "10:08",
-      },
-    ],
-  },
-  {
-    id: "review-3",
-    repoId: "t3code",
-    prNumber: 3141,
-    title: "Hide disabled providers from model selector",
-    author: "tarik02",
-    branch: "provider-picker-cleanup",
-    status: "mergeable",
-    provider: "codex",
-    model: "GPT-5 Codex",
-    round: 5,
-    score: 5,
-    progress: 100,
-    findings: "0 P0, 0 P1",
-    commits: 5,
-    checks: "18/18",
-    updated: "5m ago",
-    currentStep: "Allowed to merge",
-    summary:
-      "The review found stale disabled providers in the selector rail. The follow-up commits filtered unavailable instances, preserved custom provider order, and added regression coverage for the empty selector state.",
-    nextAction: "Merge when the owner is ready.",
-    events: [
-      {
-        id: "r3-e1",
-        kind: "opened",
-        title: "PR opened",
-        body: "Selector cleanup for disabled providers.",
-        time: "08:54",
-      },
-      {
-        id: "r3-e2",
-        kind: "review",
-        title: "PR reviewed",
-        body: "Initial implementation hid too much when custom providers were disabled.",
-        time: "09:02",
-        score: 3,
-      },
-      {
-        id: "r3-e3",
-        kind: "agent",
-        title: "Agent is working on it",
-        body: "Codex narrowed filtering to unavailable instances only.",
-        time: "09:10",
-      },
-      {
-        id: "r3-e4",
-        kind: "commit",
-        title: "Commits landed",
-        body: "5 commits pushed with tests and settings copy updates.",
-        time: "09:28",
-      },
-      {
-        id: "r3-e5",
-        kind: "mergeable",
-        title: "PR reviewed",
-        body: "Allowed to merge after final provider-order checks passed.",
-        time: "09:36",
-        score: 5,
-      },
-    ],
-  },
-  {
-    id: "review-4",
-    repoId: "prr-console",
-    prNumber: 52,
-    title: "Persist repo filters across sessions",
-    author: "nina",
-    branch: "persist-filters",
-    status: "queued",
-    provider: "claude",
-    model: "Claude Opus 4.5",
-    round: 1,
-    score: 0,
-    progress: 8,
-    findings: "not reviewed",
-    commits: 1,
-    checks: "queued",
-    updated: "7m ago",
-    currentStep: "Waiting for an available review worker",
-    summary:
-      "Queued for first pass. The PR changes only client-side state persistence and should be checked for URL/share behavior and local-storage migration edge cases.",
-    nextAction: "Start first review when the worker is free.",
-    events: [
-      {
-        id: "r4-e1",
-        kind: "opened",
-        title: "PR opened",
-        body: "Adds local persistence for repo filters.",
-        time: "10:07",
-      },
-    ],
-  },
-  {
-    id: "review-5",
-    repoId: "billing",
-    prNumber: 177,
-    title: "Split webhook ingestion from normalization",
-    author: "jo",
-    branch: "webhook-normalizer",
-    status: "landed",
-    provider: "codex",
-    model: "GPT-5 Codex Fast",
-    round: 3,
-    score: 4,
-    progress: 100,
-    findings: "0 P1, 1 P2",
-    commits: 4,
-    checks: "15/15",
-    updated: "18m ago",
-    currentStep: "Merged",
-    summary:
-      "The review pushed the ingestion split through three passes. The remaining P2 is a naming cleanup that was accepted as follow-up work because the behavior is covered by integration tests.",
-    nextAction: "Watch production webhook error rate for the next deploy.",
-    events: [
-      {
-        id: "r5-e1",
-        kind: "opened",
-        title: "PR opened",
-        body: "Separates GitHub delivery ingestion from payload normalization.",
-        time: "08:10",
-      },
-      {
-        id: "r5-e2",
-        kind: "review",
-        title: "PR reviewed",
-        body: "Requested replay-safe delivery storage.",
-        time: "08:22",
-        score: 3,
-      },
-      {
-        id: "r5-e3",
-        kind: "commit",
-        title: "Commits landed",
-        body: "Replay-safe delivery IDs and integration tests landed.",
-        time: "08:49",
-      },
-      {
-        id: "r5-e4",
-        kind: "mergeable",
-        title: "PR reviewed",
-        body: "Allowed to merge.",
-        time: "09:03",
-        score: 4,
-      },
-      {
-        id: "r5-e5",
-        kind: "commit",
-        title: "Merged",
-        body: "Squash merge completed.",
-        time: "09:08",
-      },
-    ],
-  },
-  {
-    id: "review-6",
-    repoId: "prr-console",
-    prNumber: 39,
-    title: "Stream worker logs into the dashboard",
-    author: "fagner",
-    branch: "feat/worker-log-stream",
-    status: "landed",
-    provider: "codex",
-    model: "GPT-5 Codex",
-    round: 3,
-    score: 5,
-    progress: 100,
-    findings: "0 P1, 0 P2",
-    commits: 6,
-    checks: "14/14",
-    updated: "2h ago",
-    currentStep: "Merged",
-    summary:
-      "Three passes tightened backpressure and reconnect logic for the worker log stream. The final review cleared every finding and the change merged after a green deploy preview.",
-    nextAction: "No further review needed — merged.",
-    events: [
-      {
-        id: "r6-e1",
-        kind: "opened",
-        title: "PR opened",
-        body: "Adds an SSE channel from the worker to the dashboard.",
-        time: "Mon 14:02",
-      },
-      {
-        id: "r6-e2",
-        kind: "review",
-        title: "PR reviewed",
-        body: "Requested reconnect/backoff and a bounded buffer.",
-        time: "Mon 14:20",
-        score: 3,
-      },
-      {
-        id: "r6-e3",
-        kind: "agent",
-        title: "Agent is working on it",
-        body: "Codex added exponential backoff and a ring buffer.",
-        time: "Mon 14:33",
-      },
-      {
-        id: "r6-e4",
-        kind: "commit",
-        title: "Commits landed",
-        body: "4 commits pushed with stream tests.",
-        time: "Mon 15:01",
-      },
-      {
-        id: "r6-e5",
-        kind: "mergeable",
-        title: "PR reviewed",
-        body: "Allowed to merge.",
-        time: "Mon 15:18",
-        score: 5,
-      },
-      {
-        id: "r6-e6",
-        kind: "commit",
-        title: "Merged",
-        body: "Squash merge completed and deployed.",
-        time: "Mon 15:24",
-      },
-    ],
-  },
-  {
-    id: "review-7",
-    repoId: "t3code",
-    prNumber: 3098,
-    title: "Add keyboard shortcuts to the model selector",
-    author: "tarik02",
-    branch: "selector-hotkeys",
-    status: "landed",
-    provider: "claude",
-    model: "Claude Sonnet 4.5",
-    round: 2,
-    score: 4,
-    progress: 100,
-    findings: "0 P1, 1 P2",
-    commits: 3,
-    checks: "20/20",
-    updated: "yesterday",
-    currentStep: "Merged",
-    summary:
-      "The selector gained arrow-key navigation and a quick-open chord. One P2 around focus-trap edge cases was accepted as follow-up because it only affects nested dialogs.",
-    nextAction: "No further review needed — merged.",
-    events: [
-      {
-        id: "r7-e1",
-        kind: "opened",
-        title: "PR opened",
-        body: "Keyboard navigation for the provider/model list.",
-        time: "Tue 10:11",
-      },
-      {
-        id: "r7-e2",
-        kind: "review",
-        title: "PR reviewed",
-        body: "Asked for roving tabindex and an escape handler.",
-        time: "Tue 10:40",
-        score: 3,
-      },
-      {
-        id: "r7-e3",
-        kind: "agent",
-        title: "Agent is working on it",
-        body: "Claude Code implemented roving focus and the shortcuts.",
-        time: "Tue 11:02",
-      },
-      {
-        id: "r7-e4",
-        kind: "commit",
-        title: "Commits landed",
-        body: "3 commits pushed with accessibility tests.",
-        time: "Tue 11:39",
-      },
-      {
-        id: "r7-e5",
-        kind: "mergeable",
-        title: "PR reviewed",
-        body: "Allowed to merge with one P2 follow-up.",
-        time: "Tue 12:05",
-        score: 4,
-      },
-      {
-        id: "r7-e6",
-        kind: "commit",
-        title: "Merged",
-        body: "Rebase merge completed.",
-        time: "Tue 12:11",
-      },
-    ],
-  },
-  {
-    id: "review-8",
-    repoId: "billing",
-    prNumber: 165,
-    title: "Cache currency conversion rates per request",
-    author: "maya",
-    branch: "fx-rate-cache",
-    status: "landed",
-    provider: "codex",
-    model: "GPT-5 Codex Fast",
-    round: 2,
-    score: 5,
-    progress: 100,
-    findings: "0 P1, 0 P2",
-    commits: 4,
-    checks: "11/11",
-    updated: "3d ago",
-    currentStep: "Merged",
-    summary:
-      "Conversion rates are now memoized per request lifecycle, cutting redundant FX lookups. The review confirmed cache invalidation on rate refresh and merged with full coverage.",
-    nextAction: "No further review needed — merged.",
-    events: [
-      {
-        id: "r8-e1",
-        kind: "opened",
-        title: "PR opened",
-        body: "Adds a per-request FX rate cache.",
-        time: "Sat 09:20",
-      },
-      {
-        id: "r8-e2",
-        kind: "review",
-        title: "PR reviewed",
-        body: "Requested invalidation on rate refresh.",
-        time: "Sat 09:48",
-        score: 4,
-      },
-      {
-        id: "r8-e3",
-        kind: "agent",
-        title: "Agent is working on it",
-        body: "Codex wired cache invalidation to the refresh hook.",
-        time: "Sat 10:05",
-      },
-      {
-        id: "r8-e4",
-        kind: "commit",
-        title: "Commits landed",
-        body: "2 commits pushed with cache tests.",
-        time: "Sat 10:31",
-      },
-      {
-        id: "r8-e5",
-        kind: "mergeable",
-        title: "PR reviewed",
-        body: "Allowed to merge.",
-        time: "Sat 10:52",
-        score: 5,
-      },
-      {
-        id: "r8-e6",
-        kind: "commit",
-        title: "Merged",
-        body: "Squash merge completed.",
-        time: "Sat 10:58",
-      },
-    ],
-  },
-]
 
 function useIsNarrowViewport() {
   const [isNarrow, setIsNarrow] = useState(() =>
@@ -595,24 +53,44 @@ function useIsNarrowViewport() {
   return isNarrow
 }
 
-function repoName(repos: Repo[], repoId: string) {
-  return repos.find((repo) => repo.id === repoId)?.name ?? repoId
+function repoShort(repo: string) {
+  return repo.split("/").pop() ?? repo
 }
 
-function scoreTone(score: number) {
-  if (score >= 4) return "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
-  if (score >= 3) return "border-amber-400/25 bg-amber-400/10 text-amber-200"
-  if (score > 0) return "border-red-400/25 bg-red-400/10 text-red-200"
-  return "border-zinc-700 bg-zinc-900 text-zinc-500"
+function findingsLine(x: { p0?: number; p1?: number; p2?: number }) {
+  const p0 = x.p0 ?? 0
+  const p1 = x.p1 ?? 0
+  const p2 = x.p2 ?? 0
+  if (p0 + p1 + p2 === 0) return "No inline findings."
+  const parts: string[] = []
+  if (p0) parts.push(`${p0} P0`)
+  if (p1) parts.push(`${p1} P1`)
+  if (p2) parts.push(`${p2} P2`)
+  return parts.join(" · ")
 }
 
-function statusMeta(status: ReviewStatus) {
-  switch (status) {
+type StatusDisplay = { label: string; icon: LucideIcon; tone: string; spin?: boolean }
+
+function statusDisplay(pr: Pr): StatusDisplay {
+  if (pr.prState === "merged")
+    return {
+      label: "Merged",
+      icon: GitMerge,
+      tone: "border-violet-400/25 bg-violet-400/10 text-violet-200",
+    }
+  if (pr.prState === "closed")
+    return {
+      label: "Closed",
+      icon: GitPullRequestClosed,
+      tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400",
+    }
+  switch (pr.status) {
     case "reviewing":
       return {
         label: "Reviewing",
         icon: Loader2,
         tone: "border-sky-400/25 bg-sky-400/10 text-sky-200",
+        spin: true,
       }
     case "queued":
       return {
@@ -620,28 +98,115 @@ function statusMeta(status: ReviewStatus) {
         icon: Clock3,
         tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400",
       }
-    case "mergeable":
+    case "reviewed":
       return {
-        label: "Allowed",
-        icon: GitMerge,
+        label: "Reviewed",
+        icon: CheckCircle2,
         tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
       }
-    case "blocked":
+    case "failed":
       return {
-        label: "Blocked",
-        icon: AlertTriangle,
+        label: "Failed",
+        icon: XCircle,
         tone: "border-red-400/25 bg-red-400/10 text-red-200",
-      }
-    case "landed":
-      return {
-        label: "Merged",
-        icon: CheckCircle2,
-        tone: "border-violet-400/25 bg-violet-400/10 text-violet-200",
       }
   }
 }
 
-function eventIcon(kind: EventKind) {
+function scoreTone(score?: number) {
+  if (score == null) return "border-zinc-700 bg-zinc-900 text-zinc-500"
+  if (score >= 4) return "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
+  if (score >= 3) return "border-amber-400/25 bg-amber-400/10 text-amber-200"
+  return "border-red-400/25 bg-red-400/10 text-red-200"
+}
+
+// Rebuild the review loop from a PR's per-commit review passes: opened anchor,
+// a "new commit" marker whenever the head SHA changes, the review/score for each
+// reviewed pass, the live line for an in-flight pass, and a merge/close cap.
+function buildEvents(pr: Pr): TimelineEvent[] {
+  const events: TimelineEvent[] = []
+  const first = pr.passes[0]
+  if (first) {
+    events.push({
+      id: `${pr.key}-opened`,
+      kind: "opened",
+      title: "PR opened",
+      body: `Opened by ${pr.author}.`,
+      time: first.queuedAt,
+    })
+  }
+
+  let prevSha: string | undefined
+  for (const pass of pr.passes) {
+    if (prevSha && pass.headSha !== prevSha) {
+      events.push({
+        id: `${pass._id}-commit`,
+        kind: "commit",
+        title: "Commits landed",
+        body: `New commit ${pass.headSha.slice(0, 7)} pushed.`,
+        time: pass.queuedAt,
+      })
+    }
+    prevSha = pass.headSha
+
+    if (pass.status === "reviewed") {
+      events.push({
+        id: pass._id,
+        kind: "review",
+        title: "PR reviewed",
+        body: findingsLine(pass),
+        time: pass.finishedAt ?? pass.queuedAt,
+        score: pass.confidence,
+      })
+    } else if (pass.status === "reviewing") {
+      events.push({
+        id: pass._id,
+        kind: "agent",
+        title: "Agent is reviewing",
+        body: pass.progress ?? "The agent is reviewing this commit.",
+        time: pass.startedAt ?? pass.queuedAt,
+      })
+    } else if (pass.status === "failed") {
+      events.push({
+        id: pass._id,
+        kind: "failed",
+        title: "Review failed",
+        body: pass.error ?? "The run errored or timed out.",
+        time: pass.finishedAt ?? pass.queuedAt,
+      })
+    } else {
+      events.push({
+        id: pass._id,
+        kind: "agent",
+        title: "Queued for review",
+        body: "Waiting for an available review worker.",
+        time: pass.queuedAt,
+      })
+    }
+  }
+
+  if (pr.prState === "merged") {
+    events.push({
+      id: `${pr.key}-merged`,
+      kind: "merged",
+      title: "Merged",
+      body: "PR merged on GitHub — no further review needed.",
+      time: pr.updatedAt,
+    })
+  } else if (pr.prState === "closed") {
+    events.push({
+      id: `${pr.key}-closed`,
+      kind: "closed",
+      title: "Closed",
+      body: "PR closed without merging.",
+      time: pr.updatedAt,
+    })
+  }
+
+  return events
+}
+
+function eventIcon(kind: EventKind): LucideIcon {
   switch (kind) {
     case "opened":
       return GitPullRequest
@@ -651,10 +216,12 @@ function eventIcon(kind: EventKind) {
       return Loader2
     case "commit":
       return GitCommit
-    case "mergeable":
+    case "merged":
       return GitMerge
-    case "blocked":
+    case "failed":
       return AlertTriangle
+    case "closed":
+      return GitPullRequestClosed
   }
 }
 
@@ -667,8 +234,9 @@ function EventGlyph({ kind }: { kind: EventKind }) {
         kind === "agent" && "border-sky-400/30 text-sky-300",
         kind === "review" && "border-amber-400/30 text-amber-300",
         kind === "commit" && "border-violet-400/30 text-violet-300",
-        kind === "mergeable" && "border-emerald-400/30 text-emerald-300",
-        kind === "blocked" && "border-red-400/30 text-red-300",
+        kind === "merged" && "border-emerald-400/30 text-emerald-300",
+        kind === "failed" && "border-red-400/30 text-red-300",
+        kind === "closed" && "border-zinc-700 text-zinc-400",
         kind === "opened" && "border-zinc-700 text-zinc-400",
       )}
     >
@@ -677,23 +245,23 @@ function EventGlyph({ kind }: { kind: EventKind }) {
   )
 }
 
-function StatusBadge({ status }: { status: ReviewStatus }) {
-  const meta = statusMeta(status)
-  const Icon = meta.icon
+function StatusBadge({ pr }: { pr: Pr }) {
+  const s = statusDisplay(pr)
+  const Icon = s.icon
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
-        meta.tone,
+        s.tone,
       )}
     >
-      <Icon className={cn("size-3", status === "reviewing" && "animate-spin")} />
-      {meta.label}
+      <Icon className={cn("size-3", s.spin && "animate-spin")} />
+      {s.label}
     </span>
   )
 }
 
-function ScoreBadge({ score }: { score: number }) {
+function ScoreBadge({ score }: { score?: number }) {
   return (
     <span
       className={cn(
@@ -701,143 +269,95 @@ function ScoreBadge({ score }: { score: number }) {
         scoreTone(score),
       )}
     >
-      {score > 0 ? `${score}/5` : "new"}
+      {score != null ? `${score}/5` : "new"}
     </span>
   )
 }
 
 function RepoSegmented({
   repos,
+  prs,
   activeRepo,
   onRepoChange,
-  onAddRepo,
 }: {
-  repos: Repo[]
+  repos: string[]
+  prs: Pr[]
   activeRepo: string
-  onRepoChange: (repoId: string) => void
-  onAddRepo: (name: string) => void
+  onRepoChange: (repo: string) => void
 }) {
-  const [adding, setAdding] = useState(false)
-  const [value, setValue] = useState("")
-
-  const submit = () => {
-    const name = value.trim()
-    if (!name) return
-    onAddRepo(name)
-    setValue("")
-    setAdding(false)
-  }
-
+  const repoSet = Array.from(new Set([...repos, ...prs.map((p) => p.repo)])).sort()
   const segments = [
-    { id: "all", label: "All", meta: REVIEWS.length, withIcon: true },
-    ...repos.map((repo) => ({
-      id: repo.id,
-      label: repo.name.split("/").pop() ?? repo.name,
-      meta: repo.active,
+    { id: "all", label: "All", count: prs.length, withIcon: true },
+    ...repoSet.map((repo) => ({
+      id: repo,
+      label: repoShort(repo),
+      count: prs.filter((p) => p.repo === repo).length,
       withIcon: false,
     })),
   ]
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <div className="inline-flex max-w-full overflow-x-auto rounded-md border border-zinc-800">
-        {segments.map((segment, index) => (
-          <button
-            key={segment.id}
-            type="button"
-            onClick={() => onRepoChange(segment.id)}
-            className={cn(
-              "inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition",
-              index > 0 && "border-l border-zinc-800",
-              activeRepo === segment.id
-                ? "bg-zinc-800 text-zinc-100"
-                : "bg-zinc-950 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200",
-            )}
-          >
-            {segment.withIcon && <ListFilter className="size-3.5" />}
-            {segment.label}
-            <span className="text-[10px] text-zinc-500">{segment.meta}</span>
-          </button>
-        ))}
-      </div>
-
-      {adding ? (
-        <div className="flex items-center gap-1">
-          <input
-            autoFocus
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") submit()
-              if (event.key === "Escape") {
-                setValue("")
-                setAdding(false)
-              }
-            }}
-            placeholder="owner/repo"
-            className="h-8 w-40 rounded-md border border-zinc-700 bg-zinc-900 px-2.5 text-xs text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-zinc-500"
-          />
-          <button
-            type="button"
-            onClick={submit}
-            className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-200 hover:border-zinc-500"
-          >
-            Add
-          </button>
-        </div>
-      ) : (
+    <div className="inline-flex max-w-full overflow-x-auto rounded-md border border-zinc-800">
+      {segments.map((segment, index) => (
         <button
+          key={segment.id}
           type="button"
-          title="Add repository"
-          aria-label="Add repository"
-          onClick={() => setAdding(true)}
-          className="inline-flex items-center justify-center rounded-md border border-zinc-800 bg-zinc-950 p-1.5 text-zinc-500 transition hover:border-zinc-700 hover:text-zinc-200"
+          onClick={() => onRepoChange(segment.id)}
+          className={cn(
+            "inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition",
+            index > 0 && "border-l border-zinc-800",
+            activeRepo === segment.id
+              ? "bg-zinc-800 text-zinc-100"
+              : "bg-zinc-950 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200",
+          )}
         >
-          <Plus className="size-3.5" />
+          {segment.withIcon && <ListFilter className="size-3.5" />}
+          {segment.label}
+          <span className="text-[10px] text-zinc-500">{segment.count}</span>
         </button>
-      )}
+      ))}
     </div>
   )
 }
 
-function PrPicker({
-  reviews,
-  selectedId,
+function PrList({
+  prs,
+  selectedKey,
   onSelect,
-  emptyLabel = "No mocked reviews for this repository yet.",
+  emptyLabel,
 }: {
-  reviews: Review[]
-  selectedId: string | null
-  onSelect: (id: string) => void
-  emptyLabel?: string
+  prs: Pr[]
+  selectedKey: string | null
+  onSelect: (key: string) => void
+  emptyLabel: string
 }) {
   return (
     <div className="space-y-1.5">
-      {reviews.map((review) => (
+      {prs.map((pr) => (
         <button
-          key={review.id}
-          onClick={() => onSelect(review.id)}
+          key={pr.key}
           type="button"
+          onClick={() => onSelect(pr.key)}
           className={cn(
             "w-full rounded-md border px-2.5 py-2 text-left transition",
-            selectedId === review.id
+            selectedKey === pr.key
               ? "border-zinc-700 bg-zinc-900 text-zinc-100"
               : "border-transparent text-zinc-400 hover:border-zinc-700 hover:bg-zinc-900/60 hover:text-zinc-200",
           )}
         >
           <div className="flex items-center justify-between gap-2">
-            <span className="truncate text-sm font-medium">#{review.prNumber}</span>
-            <ScoreBadge score={review.score} />
+            <span className="truncate text-sm font-medium">#{pr.prNumber}</span>
+            <ScoreBadge score={pr.confidence} />
           </div>
           <div className="mt-1.5 flex items-center justify-between gap-2">
-            <span className="min-w-0 flex-1 truncate text-xs">{review.title}</span>
+            <span className="min-w-0 flex-1 truncate text-xs">{pr.title}</span>
             <span className="shrink-0">
-              <StatusBadge status={review.status} />
+              <StatusBadge pr={pr} />
             </span>
           </div>
         </button>
       ))}
-      {reviews.length === 0 && (
+      {prs.length === 0 && (
         <div className="rounded-md border border-dashed border-zinc-800 p-4 text-center text-xs text-zinc-500">
           {emptyLabel}
         </div>
@@ -846,49 +366,122 @@ function PrPicker({
   )
 }
 
-function ReviewDetail({
-  review,
-  repos,
-  compact,
-}: {
-  review: Review | null
-  repos: Repo[]
-  compact: boolean
-}) {
-  if (!review) {
+function Timeline({ events }: { events: TimelineEvent[] }) {
+  const now = Date.now()
+  return (
+    <div className="relative space-y-4">
+      <div className="absolute bottom-4 left-3.5 top-4 w-px bg-zinc-800" />
+      {events.map((event) => (
+        <div key={event.id} className="relative flex gap-3">
+          <EventGlyph kind={event.kind} />
+          <div className="min-w-0 flex-1 pb-1">
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-sm font-medium text-zinc-100">{event.title}</span>
+                {event.score != null && <ScoreBadge score={event.score} />}
+              </div>
+              <span className="shrink-0 text-xs text-zinc-600">{ago(event.time, now)}</span>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">{event.body}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+const MARKDOWN_OVERRIDES = {
+  h1: { props: { className: "mt-4 mb-2 text-base font-semibold text-zinc-100" } },
+  h2: { props: { className: "mt-4 mb-2 text-sm font-semibold text-zinc-100" } },
+  h3: {
+    props: {
+      className: "mt-3 mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-400",
+    },
+  },
+  p: { props: { className: "my-2 text-sm leading-6 text-zinc-300" } },
+  ul: {
+    props: {
+      className: "my-2 ml-4 list-disc space-y-1 text-sm text-zinc-300 marker:text-zinc-600",
+    },
+  },
+  ol: {
+    props: {
+      className: "my-2 ml-4 list-decimal space-y-1 text-sm text-zinc-300 marker:text-zinc-600",
+    },
+  },
+  li: { props: { className: "leading-6" } },
+  a: {
+    props: {
+      className:
+        "text-sky-300 underline decoration-zinc-700 underline-offset-2 hover:text-sky-200",
+      target: "_blank",
+      rel: "noreferrer",
+    },
+  },
+  code: {
+    props: {
+      className: "rounded bg-zinc-800 px-1 py-0.5 font-mono text-[12px] text-zinc-200",
+    },
+  },
+  pre: {
+    props: {
+      className:
+        "my-2 overflow-x-auto rounded-md border border-zinc-800 bg-zinc-900/60 p-3 text-xs text-zinc-300",
+    },
+  },
+  strong: { props: { className: "font-semibold text-zinc-100" } },
+  hr: { props: { className: "my-3 border-zinc-800" } },
+  blockquote: {
+    props: {
+      className: "my-2 border-l-2 border-zinc-700 pl-3 text-sm italic text-zinc-400",
+    },
+  },
+}
+
+function ReviewReport({ report }: { report: string }) {
+  return (
+    <div className="[&>*:first-child]:mt-0">
+      <Markdown options={{ forceBlock: true, overrides: MARKDOWN_OVERRIDES }}>{report}</Markdown>
+    </div>
+  )
+}
+
+function ReviewDetail({ pr, compact }: { pr: Pr | null; compact: boolean }) {
+  if (!pr) {
     return (
       <section className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-5 text-sm text-zinc-500">
-        Pick a repository with active reviews to see PR context.
+        Select a PR to see its review history.
       </section>
     )
   }
+  const events = buildEvents(pr)
+  const latestReport = [...pr.passes].reverse().find((p) => p.report)
   return (
     <section className="rounded-lg border border-zinc-800 bg-zinc-950/70">
       <div className="border-b border-zinc-800 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={review.status} />
-              <ScoreBadge score={review.score} />
+              <StatusBadge pr={pr} />
+              <ScoreBadge score={pr.confidence} />
             </div>
-            <h2 className="mt-3 text-balance text-base font-semibold text-zinc-50">
-              {review.title}
-            </h2>
+            <h2 className="mt-3 text-balance text-base font-semibold text-zinc-50">{pr.title}</h2>
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500">
-              <span>{repoName(repos, review.repoId)}</span>
-              <span className="font-mono">#{review.prNumber}</span>
-              <span>{review.author}</span>
-              <span className="flex items-center gap-1">
-                <GitBranch className="size-3" />
-                {review.branch}
+              <span>{pr.repo}</span>
+              <span className="font-mono">#{pr.prNumber}</span>
+              <span>{pr.author}</span>
+              <span className="flex items-center gap-1 font-mono">
+                <GitCommit className="size-3" />
+                {pr.headSha.slice(0, 7)}
               </span>
             </div>
           </div>
           <a
-            href="#"
-            onClick={(event) => event.preventDefault()}
-            title="Open on GitHub"
-            aria-label="Open on GitHub"
+            href={pr.prUrl}
+            target="_blank"
+            rel="noreferrer"
+            title="Open PR on GitHub"
+            aria-label="Open PR on GitHub"
             className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-100"
           >
             <ExternalLink className="size-4" />
@@ -907,7 +500,7 @@ function ReviewDetail({
             <Activity className="size-3.5" />
             Review loop
           </div>
-          <Timeline events={review.events} />
+          <Timeline events={events} />
         </div>
 
         <div className={cn("p-4", compact && "border-t border-zinc-800")}>
@@ -915,94 +508,74 @@ function ReviewDetail({
             <Sparkles className="size-3.5" />
             Summary
           </div>
-          <p className="text-sm leading-6 text-zinc-300">{review.summary}</p>
-          <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-900/40 p-3 text-xs leading-5 text-zinc-400">
-            <span className="text-zinc-200">Next:</span> {review.nextAction}
-          </div>
+          {latestReport?.report ? (
+            <>
+              <ReviewReport report={latestReport.report} />
+              {latestReport.reviewUrl && (
+                <a
+                  href={latestReport.reviewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
+                >
+                  <ExternalLink className="size-3.5" />
+                  View review on GitHub
+                </a>
+              )}
+            </>
+          ) : (
+            <p className="text-sm leading-6 text-zinc-500">
+              No review has been posted for this PR yet.
+            </p>
+          )}
         </div>
       </div>
     </section>
   )
 }
 
-function Timeline({ events }: { events: ReviewEvent[] }) {
-  return (
-    <div className="relative space-y-4">
-      <div className="absolute bottom-4 left-3.5 top-4 w-px bg-zinc-800" />
-      {events.map((event) => (
-        <div key={event.id} className="relative flex gap-3">
-          <EventGlyph kind={event.kind} />
-          <div className="min-w-0 flex-1 pb-1">
-            <div className="flex min-w-0 items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-sm font-medium text-zinc-100">
-                  {event.title}
-                </span>
-                {event.score != null && <ScoreBadge score={event.score} />}
-              </div>
-              <span className="shrink-0 text-xs text-zinc-600">{event.time}</span>
-            </div>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">{event.body}</p>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 function ReviewConsole({
+  allPrs,
+  repoFiltered,
   repos,
-  reviews,
   activeRepo,
-  selectedReview,
-  selectedId,
+  selectedPr,
   compact,
   onRepoChange,
-  onSelectReview,
-  onAddRepo,
+  onSelect,
 }: {
-  repos: Repo[]
-  reviews: Review[]
+  allPrs: Pr[]
+  repoFiltered: Pr[]
+  repos: string[]
   activeRepo: string
-  selectedReview: Review | null
-  selectedId: string | null
+  selectedPr: Pr | null
   compact: boolean
-  onRepoChange: (repoId: string) => void
-  onSelectReview: (id: string) => void
-  onAddRepo: (name: string) => void
+  onRepoChange: (repo: string) => void
+  onSelect: (key: string) => void
 }) {
   const [query, setQuery] = useState("")
   const trimmed = query.trim().toLowerCase()
-  const visibleReviews = trimmed
-    ? reviews.filter((review) => {
-        const repo = repoName(repos, review.repoId).toLowerCase()
-        return (
-          review.title.toLowerCase().includes(trimmed) ||
-          `#${review.prNumber}`.includes(trimmed) ||
-          repo.includes(trimmed)
-        )
-      })
-    : reviews
+  const visible = trimmed
+    ? repoFiltered.filter(
+        (pr) =>
+          pr.title.toLowerCase().includes(trimmed) ||
+          `#${pr.prNumber}`.includes(trimmed) ||
+          pr.repo.toLowerCase().includes(trimmed),
+      )
+    : repoFiltered
 
   return (
     <div className={cn("p-4", !compact && "p-6")}>
       <div className="mb-4">
         <RepoSegmented
           repos={repos}
+          prs={allPrs}
           activeRepo={activeRepo}
           onRepoChange={onRepoChange}
-          onAddRepo={onAddRepo}
         />
       </div>
 
-      <div
-        className={cn(
-          "grid gap-4",
-          compact
-            ? "grid-cols-1"
-            : "grid-cols-[20rem_minmax(0,1fr)]",
-        )}
-      >
+      <div className={cn("grid gap-4", compact ? "grid-cols-1" : "grid-cols-[20rem_minmax(0,1fr)]")}>
         <section className="self-start overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/70">
           <div className="flex h-10 items-center gap-2 border-b border-zinc-800 px-3 transition focus-within:bg-zinc-900/40">
             <Search className="size-4 shrink-0 text-zinc-500" />
@@ -1030,70 +603,50 @@ function ReviewConsole({
                 <GitPullRequest className="size-3.5" />
                 PRs
               </span>
-              <span className="text-zinc-600">{visibleReviews.length}</span>
+              <span className="text-zinc-600">{visible.length}</span>
             </div>
-            <PrPicker
-              reviews={visibleReviews}
-              selectedId={selectedId}
-              onSelect={onSelectReview}
-              emptyLabel={trimmed ? "No PRs match your search." : "No mocked reviews for this repository yet."}
+            <PrList
+              prs={visible}
+              selectedKey={selectedPr?.key ?? null}
+              onSelect={onSelect}
+              emptyLabel={trimmed ? "No PRs match your search." : "No reviews for this repository yet."}
             />
           </div>
         </section>
-        <ReviewDetail review={selectedReview} repos={repos} compact={compact} />
+        <ReviewDetail pr={selectedPr} compact={compact} />
       </div>
     </div>
   )
 }
 
 export default function App() {
-  const [repos, setRepos] = useState(INITIAL_REPOS)
+  const prsData = useQuery(api.reviews.prs)
+  const reposData = useQuery(api.repos.list)
   const [activeRepo, setActiveRepo] = useState("all")
-  const [selectedReviewId, setSelectedReviewId] = useState<string | null>(REVIEWS[0]?.id ?? null)
-  const isNarrowViewport = useIsNarrowViewport()
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const isNarrow = useIsNarrowViewport()
+  const compact = isNarrow
 
-  const filteredReviews = useMemo(
-    () =>
-      activeRepo === "all"
-        ? REVIEWS
-        : REVIEWS.filter((review) => review.repoId === activeRepo),
-    [activeRepo],
-  )
-  const selectedReview =
-    filteredReviews.find((review) => review.id === selectedReviewId) ??
-    filteredReviews[0] ??
-    null
-  const compact = isNarrowViewport
+  const repoFiltered = useMemo(() => {
+    const all = prsData ?? []
+    return activeRepo === "all" ? all : all.filter((p) => p.repo === activeRepo)
+  }, [prsData, activeRepo])
+
+  const selectedPr = repoFiltered.find((p) => p.key === selectedKey) ?? repoFiltered[0] ?? null
 
   useEffect(() => {
-    if (filteredReviews.length === 0) {
-      setSelectedReviewId(null)
+    if (repoFiltered.length === 0) {
+      if (selectedKey !== null) setSelectedKey(null)
       return
     }
-    if (!selectedReviewId || !filteredReviews.some((review) => review.id === selectedReviewId)) {
-      setSelectedReviewId(filteredReviews[0].id)
+    if (!selectedKey || !repoFiltered.some((p) => p.key === selectedKey)) {
+      setSelectedKey(repoFiltered[0].key)
     }
-  }, [filteredReviews, selectedReviewId])
+  }, [repoFiltered, selectedKey])
 
-  const addRepo = (name: string) => {
-    const id = name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
-    if (!id || repos.some((repo) => repo.id === id || repo.name === name)) return
-    setRepos((current) => [
-      ...current,
-      {
-        id,
-        name,
-        branch: "main",
-        active: 0,
-        queued: 0,
-        lastSync: "just now",
-      },
-    ])
-    setActiveRepo(id)
-  }
+  const loading = prsData === undefined || reposData === undefined
+  const prs = prsData ?? []
+  const repos = reposData ?? []
 
   return (
     <div className="min-h-full bg-[#080809] text-zinc-100">
@@ -1103,9 +656,7 @@ export default function App() {
             <GitPullRequest className="size-4 text-sky-300" />
           </div>
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-zinc-100">
-              PR Review Console
-            </div>
+            <div className="truncate text-sm font-semibold text-zinc-100">PR Review Console</div>
             <div className="truncate text-xs text-zinc-600">
               Claude Code and Codex review loops
             </div>
@@ -1114,17 +665,31 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-7xl px-3 py-4">
-        <ReviewConsole
-          repos={repos}
-          reviews={filteredReviews}
-          activeRepo={activeRepo}
-          selectedReview={selectedReview}
-          selectedId={selectedReviewId}
-          compact={compact}
-          onRepoChange={setActiveRepo}
-          onSelectReview={setSelectedReviewId}
-          onAddRepo={addRepo}
-        />
+        {loading ? (
+          <div className="flex min-h-[60vh] items-center justify-center gap-2 text-sm text-zinc-500">
+            <Loader2 className="size-4 animate-spin" />
+            Loading reviews…
+          </div>
+        ) : prs.length === 0 ? (
+          <div className="flex min-h-[60vh] flex-col items-center justify-center gap-2 text-center text-sm text-zinc-500">
+            <GitPullRequest className="size-6 text-zinc-700" />
+            <div>No reviews yet.</div>
+            <div className="text-xs text-zinc-600">
+              The worker hasn’t reviewed any pull requests on the watched repos.
+            </div>
+          </div>
+        ) : (
+          <ReviewConsole
+            allPrs={prs}
+            repoFiltered={repoFiltered}
+            repos={repos}
+            activeRepo={activeRepo}
+            selectedPr={selectedPr}
+            compact={compact}
+            onRepoChange={setActiveRepo}
+            onSelect={setSelectedKey}
+          />
+        )}
       </main>
     </div>
   )
