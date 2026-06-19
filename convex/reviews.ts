@@ -206,6 +206,32 @@ export const claimable = query({
   },
 })
 
+// A blocking caller (`prr await`) subscribes to this: the single live review row
+// for one (repo, PR, head SHA). Multiple rows can share that key — a failed
+// attempt followed by a re-enqueue — so we return the most relevant one: a
+// terminal `reviewed` row if any exists, else the newest by `queuedAt`. Null
+// until a webhook/rescan first queues this head SHA.
+export const getByPrSha = query({
+  args: {
+    repo: v.string(),
+    prNumber: v.number(),
+    headSha: v.string(),
+  },
+  returns: v.union(v.null(), reviewDoc),
+  handler: async (ctx, { repo, prNumber, headSha }) => {
+    const rows = await ctx.db
+      .query("reviews")
+      .withIndex("by_pr_sha", (q) =>
+        q.eq("repo", repo).eq("prNumber", prNumber).eq("headSha", headSha),
+      )
+      .collect()
+    if (rows.length === 0) return null
+    const reviewed = rows.filter((r) => r.status === "reviewed")
+    const pool = reviewed.length ? reviewed : rows
+    return pool.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+  },
+})
+
 // The dashboard subscribes to this: live board buckets.
 export const board = query({
   args: {},

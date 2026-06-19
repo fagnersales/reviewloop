@@ -108,6 +108,69 @@ default — mirrors how the locator is run manually).
 - Kill the worker mid-review → the `requeue stale reviews` cron flips it back to
   `queued` after ~25 min; restart → it re-claims.
 
+## Waiting for a review (`node worker/await.mjs`)
+
+`worker/await.mjs` is a blocking companion to the worker: it subscribes to the
+**one** `reviews` row for a PR's *head commit* and exits the moment that row goes
+**reviewed** / **failed** — no polling, no human in the relay. It's meant to be
+run in the background by an automated caller (Claude Code) right after pushing.
+Invoke it as `node worker/await.mjs <pr>` (or `npm run await -- <pr> …`); the
+installed bin alias is `prr-await <pr>`.
+
+```
+git push ──▶ webhook ──▶ reviews row (queued→reviewing→reviewed)
+                              │ websocket (reactive)
+                              ▼
+                     worker/await.mjs <pr>
+                     blocks on the row for THIS head SHA,
+                     prints result JSON to stdout, exits with a verdict code
+```
+
+```bash
+node worker/await.mjs <pr> --repo owner/name
+# defaults: --repo from `gh repo view`, --head from `gh pr view <pr>`,
+#           --timeout 1800, heartbeat on stderr (--quiet to mute).
+# stdout carries the result JSON only on a terminal review outcome (exit 0/2/3/124);
+# on exit 1 (usage / connection / query error) nothing is printed to stdout. `--json`
+# is accepted for clarity but is the default behavior — there is no `--no-json` opposite flag.
+```
+
+Head-SHA keyed, so it waits for the review of *this* push (a re-push enqueues a
+fresh row keyed by the new SHA). It prints a status heartbeat to **stderr** and
+the result JSON to **stdout**:
+
+```json
+{ "status": "reviewed", "repo": "owner/name", "prNumber": 42, "headSha": "…",
+  "reviewUrl": "…", "confidence": 4, "reviewEffort": 3,
+  "p0": 0, "p1": 1, "p2": 2, "error": null, "finishedAt": 1718800000000 }
+```
+
+(`error` carries the failure reason on a `failed` row; `null` otherwise.)
+
+Exit codes (so a caller can branch without parsing the JSON):
+
+| code | meaning |
+| --- | --- |
+| `0` | reviewed, no P0/P1 |
+| `2` | reviewed with blockers — `p0 \|\| p1 > 0`, **or** the counts were unparseable (`null`); either way, read the review |
+| `3` | failed (`error` in the JSON carries the reason) — last-observed state, not final |
+| `124` | timed out (prints last-known state) |
+| `1` | usage / connection error |
+
+Exit `3` is the *last-observed* state, not a final give-up: the worker's fallback
+reconcile (~`fallbackReconcileMin`, default 30 min) re-enqueues open PRs whose only
+rows for the head SHA are `failed` (a fresh `queued` row), so a caller treating exit
+`3` as retriable can simply re-run `await` to catch the next attempt.
+
+**Branch on the exit code, not `.status`.** On `--timeout` the JSON `status`
+reflects the last-known state (e.g. `"reviewing"`), not `"timeout"` — only the
+exit code (`124`) tells you it gave up. And if a PR is closed while its review is
+still `queued`, the row is removed and `await` blocks until `--timeout` (exit
+`124`) rather than exiting early.
+
+If no row appears within ~60s it warns once to stderr (worker down? webhook not
+wired for this repo?) and keeps waiting until `--timeout`.
+
 ## Config (`worker/config.json`)
 
 | key | meaning |
