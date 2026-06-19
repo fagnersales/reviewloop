@@ -9,7 +9,11 @@
     "dev:convex": "convex dev",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "worker": "node worker/index.mjs"
+    "worker": "node worker/index.mjs",
+    "await": "node worker/await.mjs"
+  },
+  "bin": {
+    "prr-await": "worker/await.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
