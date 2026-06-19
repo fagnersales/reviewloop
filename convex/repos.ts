@@ -1,22 +1,67 @@
 import { v } from "convex/values"
 import { mutation, query } from "./_generated/server"
+import type { QueryCtx } from "./_generated/server"
+
+// GitHub repo slugs are case-insensitive ("Vercel/Next.js" === "vercel/next.js"),
+// so we match case-insensitively to avoid duplicate watch entries. We still store
+// and display the repo with its original casing (the dashboard filter compares it
+// against `reviews.repo`, which carries GitHub's canonical casing).
+//
+// `watchedRepos` is config-scale (a handful of rows owned by the dashboard/worker),
+// so a full `.collect()` here is bounded and acceptable — and it keeps the dedup
+// back-compatible with existing rows (no new stored field needed).
+async function getRepoRow(ctx: QueryCtx, repo: string) {
+  const target = repo.toLowerCase()
+  const rows = await ctx.db.query("watchedRepos").collect()
+  return rows.find((r) => r.repo.toLowerCase() === target) ?? null
+}
 
 // Worker publishes the repos it's configured to review (from worker/config.json)
-// on startup, so the dashboard lists every watched repo — even one with zero
-// reviews yet — instead of only repos that happen to have review activity.
+// on startup. Additive: it ensures each configured repo is present without
+// deleting others, so repos added from the dashboard survive a worker restart.
+// The watch list is owned by the dashboard; the worker only guarantees its own
+// repos are listed.
 export const setWatched = mutation({
   args: { repos: v.array(v.string()) },
   returns: v.null(),
   handler: async (ctx, { repos }) => {
-    const want = new Set(repos)
-    const existing = await ctx.db.query("watchedRepos").collect()
-    for (const row of existing) {
-      if (want.has(row.repo)) want.delete(row.repo) // keep it
-      else await ctx.db.delete(row._id) // no longer configured
+    // Read the watch set once (config-scale: bounded by the dashboard/worker
+    // config, so a single `.collect()` is acceptable) and check membership
+    // case-insensitively in memory, avoiding an O(n²) collect-per-repo loop.
+    const rows = await ctx.db.query("watchedRepos").collect()
+    const watched = new Set(rows.map((r) => r.repo.toLowerCase()))
+    for (const repo of repos) {
+      const key = repo.toLowerCase()
+      if (!watched.has(key)) {
+        await ctx.db.insert("watchedRepos", { repo, updatedAt: Date.now() })
+        watched.add(key)
+      }
     }
-    for (const repo of want) {
-      await ctx.db.insert("watchedRepos", { repo, updatedAt: Date.now() })
-    }
+    return null
+  },
+})
+
+// Dashboard adds a repo to the watch list. Expects "owner/name".
+export const add = mutation({
+  args: { repo: v.string() },
+  returns: v.union(v.literal("added"), v.literal("exists"), v.literal("invalid")),
+  handler: async (ctx, { repo }) => {
+    const name = repo.trim()
+    if (!/^[^/\s]+\/[^/\s]+$/.test(name)) return "invalid"
+    if (await getRepoRow(ctx, name)) return "exists"
+    await ctx.db.insert("watchedRepos", { repo: name, updatedAt: Date.now() })
+    return "added"
+  },
+})
+
+// Dashboard removes a repo from the watch list. (The worker re-adds it on its
+// next publish if the repo is still in its config.)
+export const remove = mutation({
+  args: { repo: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { repo }) => {
+    const existing = await getRepoRow(ctx, repo)
+    if (existing) await ctx.db.delete(existing._id)
     return null
   },
 })

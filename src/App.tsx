@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { useQuery } from "convex/react"
+import { useMutation, useQuery } from "convex/react"
 import { type FunctionReturnType } from "convex/server"
 import Markdown from "markdown-to-jsx"
 import {
@@ -15,6 +15,7 @@ import {
   ListFilter,
   Loader2,
   type LucideIcon,
+  Plus,
   Rows3,
   Search,
   Sparkles,
@@ -26,6 +27,7 @@ import { cn } from "./lib/cn"
 import { ago } from "./lib/format"
 
 type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
+type AddResult = "added" | "exists" | "invalid"
 type EventKind = "opened" | "review" | "agent" | "commit" | "merged" | "failed" | "closed"
 
 type TimelineEvent = {
@@ -279,43 +281,165 @@ function RepoSegmented({
   prs,
   activeRepo,
   onRepoChange,
+  onAdd,
+  onRemove,
+  removeError,
 }: {
   repos: string[]
   prs: Pr[]
   activeRepo: string
   onRepoChange: (repo: string) => void
+  onAdd: (repo: string) => Promise<AddResult>
+  onRemove: (repo: string) => void
+  removeError: string | null
 }) {
-  const repoSet = Array.from(new Set([...repos, ...prs.map((p) => p.repo)])).sort()
-  const segments = [
-    { id: "all", label: "All", count: prs.length, withIcon: true },
-    ...repoSet.map((repo) => ({
-      id: repo,
-      label: repoShort(repo),
-      count: prs.filter((p) => p.repo === repo).length,
-      withIcon: false,
-    })),
-  ]
+  const [adding, setAdding] = useState(false)
+  const [value, setValue] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  // GitHub repo slugs are case-insensitive, so compare on lower-case throughout.
+  // `repos` carries the stored (user-typed) casing; `prs[].repo` carries GitHub's
+  // canonical casing. Dedup on the lower-cased key, preferring the canonical
+  // casing from `prs` so each real repo renders as exactly one segment.
+  const watched = new Set(repos.map((r) => r.toLowerCase()))
+  const byKey = new Map<string, string>()
+  for (const repo of repos) byKey.set(repo.toLowerCase(), repo)
+  for (const pr of prs) byKey.set(pr.repo.toLowerCase(), pr.repo)
+  const repoSet = Array.from(byKey.values()).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+
+  // Only clear/close on a real add; on invalid/exists keep the input open and
+  // surface why, so the backend's verdict reaches the user instead of vanishing.
+  const submit = async () => {
+    const name = value.trim()
+    if (!name) return
+    let result: AddResult
+    try {
+      result = await onAdd(name)
+    } catch {
+      setError("Couldn’t add — try again")
+      return
+    }
+    if (result === "added") {
+      setValue("")
+      setError(null)
+      setAdding(false)
+    } else {
+      setError(result === "exists" ? "Already watched" : "Use owner/name")
+    }
+  }
+
+  const closeAdd = () => {
+    setValue("")
+    setError(null)
+    setAdding(false)
+  }
 
   return (
-    <div className="inline-flex max-w-full overflow-x-auto rounded-md border border-zinc-800">
-      {segments.map((segment, index) => (
+    <div className="flex flex-wrap items-center gap-2">
+      <div className="inline-flex max-w-full items-stretch overflow-x-auto rounded-md border border-zinc-800">
         <button
-          key={segment.id}
           type="button"
-          onClick={() => onRepoChange(segment.id)}
+          onClick={() => onRepoChange("all")}
           className={cn(
             "inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-xs font-medium transition",
-            index > 0 && "border-l border-zinc-800",
-            activeRepo === segment.id
+            activeRepo === "all"
               ? "bg-zinc-800 text-zinc-100"
               : "bg-zinc-950 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200",
           )}
         >
-          {segment.withIcon && <ListFilter className="size-3.5" />}
-          {segment.label}
-          <span className="text-[10px] text-zinc-500">{segment.count}</span>
+          <ListFilter className="size-3.5" />
+          All
+          <span className="text-[10px] text-zinc-500">{prs.length}</span>
         </button>
-      ))}
+        {repoSet.map((repo) => {
+          const key = repo.toLowerCase()
+          const active = activeRepo.toLowerCase() === key
+          const count = prs.filter((p) => p.repo.toLowerCase() === key).length
+          const isWatched = watched.has(key)
+          return (
+            <div
+              key={repo}
+              className={cn(
+                "group/seg relative inline-flex shrink-0 items-center border-l border-zinc-800 transition",
+                active ? "bg-zinc-800" : "bg-zinc-950 hover:bg-zinc-900",
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => onRepoChange(repo)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 py-1.5 pl-3 text-xs font-medium transition",
+                  active ? "text-zinc-100" : "text-zinc-400 group-hover/seg:text-zinc-200",
+                  isWatched ? "pr-1.5" : "pr-3",
+                )}
+              >
+                {repoShort(repo)}
+                <span className="text-[10px] text-zinc-500">{count}</span>
+              </button>
+              {isWatched && (
+                <button
+                  type="button"
+                  title={`Remove ${repo}`}
+                  aria-label={`Remove ${repo}`}
+                  onClick={() => onRemove(repo)}
+                  className="mr-1.5 rounded p-0.5 text-zinc-600 opacity-0 transition hover:text-zinc-200 focus:opacity-100 group-hover/seg:opacity-100"
+                >
+                  <X className="size-3" />
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {adding ? (
+        <div className="flex items-center gap-1.5">
+          <input
+            autoFocus
+            value={value}
+            onChange={(event) => {
+              setValue(event.target.value)
+              setError(null)
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void submit()
+              if (event.key === "Escape") closeAdd()
+            }}
+            placeholder="owner/repo"
+            className={cn(
+              "h-8 w-44 rounded-md border bg-zinc-900 px-2.5 text-xs text-zinc-100 outline-none placeholder:text-zinc-600",
+              error ? "border-red-500/60 focus:border-red-500/60" : "border-zinc-700 focus:border-zinc-500",
+            )}
+          />
+          <button
+            type="button"
+            onClick={() => void submit()}
+            className="rounded-md border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-200 hover:border-zinc-500"
+          >
+            Add
+          </button>
+          {error && (
+            <span className="text-xs text-red-300" role="alert">
+              {error}
+            </span>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          title="Add repository"
+          aria-label="Add repository"
+          onClick={() => setAdding(true)}
+          className="inline-flex items-center justify-center rounded-md border border-zinc-800 bg-zinc-950 p-1.5 text-zinc-500 transition hover:border-zinc-700 hover:text-zinc-200"
+        >
+          <Plus className="size-3.5" />
+        </button>
+      )}
+
+      {removeError && (
+        <span className="text-xs text-red-300" role="alert">
+          {removeError}
+        </span>
+      )}
     </div>
   )
 }
@@ -446,11 +570,25 @@ function ReviewReport({ report }: { report: string }) {
   )
 }
 
-function ReviewDetail({ pr, compact }: { pr: Pr | null; compact: boolean }) {
+function ReviewDetail({
+  pr,
+  compact,
+  hasPrs,
+  isAll,
+}: {
+  pr: Pr | null
+  compact: boolean
+  hasPrs: boolean
+  isAll: boolean
+}) {
   if (!pr) {
     return (
       <section className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-5 text-sm text-zinc-500">
-        Select a PR to see its review history.
+        {hasPrs
+          ? "Select a PR to see its review history."
+          : isAll
+            ? "No reviews yet. Reviews appear here once the worker reviews a PR on a watched repo."
+            : "No reviews for this repository yet. Reviews will appear here once the worker reviews a PR on a watched repo."}
       </section>
     )
   }
@@ -543,6 +681,9 @@ function ReviewConsole({
   compact,
   onRepoChange,
   onSelect,
+  onAddRepo,
+  onRemoveRepo,
+  removeError,
 }: {
   allPrs: Pr[]
   repoFiltered: Pr[]
@@ -552,6 +693,9 @@ function ReviewConsole({
   compact: boolean
   onRepoChange: (repo: string) => void
   onSelect: (key: string) => void
+  onAddRepo: (repo: string) => Promise<AddResult>
+  onRemoveRepo: (repo: string) => void
+  removeError: string | null
 }) {
   const [query, setQuery] = useState("")
   const trimmed = query.trim().toLowerCase()
@@ -572,6 +716,9 @@ function ReviewConsole({
           prs={allPrs}
           activeRepo={activeRepo}
           onRepoChange={onRepoChange}
+          onAdd={onAddRepo}
+          onRemove={onRemoveRepo}
+          removeError={removeError}
         />
       </div>
 
@@ -609,11 +756,17 @@ function ReviewConsole({
               prs={visible}
               selectedKey={selectedPr?.key ?? null}
               onSelect={onSelect}
-              emptyLabel={trimmed ? "No PRs match your search." : "No reviews for this repository yet."}
+              emptyLabel={
+                trimmed
+                  ? "No PRs match your search."
+                  : activeRepo === "all"
+                    ? "No reviews yet."
+                    : "No reviews for this repository yet."
+              }
             />
           </div>
         </section>
-        <ReviewDetail pr={selectedPr} compact={compact} />
+        <ReviewDetail pr={selectedPr} compact={compact} hasPrs={repoFiltered.length > 0} isAll={activeRepo === "all"} />
       </div>
     </div>
   )
@@ -622,14 +775,55 @@ function ReviewConsole({
 export default function App() {
   const prsData = useQuery(api.reviews.prs)
   const reposData = useQuery(api.repos.list)
+  const addRepo = useMutation(api.repos.add)
+  const removeRepo = useMutation(api.repos.remove)
   const [activeRepo, setActiveRepo] = useState("all")
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const [removeError, setRemoveError] = useState<string | null>(null)
   const isNarrow = useIsNarrowViewport()
   const compact = isNarrow
 
+  // Clearing the stale remove banner on any deliberate navigation/add keeps a
+  // failed-remove message from outliving its relevance across unrelated actions.
+  const handleRepoChange = (repo: string) => {
+    setRemoveError(null)
+    setActiveRepo(repo)
+  }
+
+  const handleAddRepo = (repo: string) =>
+    addRepo({ repo }).then((result) => {
+      if (result === "added") {
+        setRemoveError(null)
+        setActiveRepo(repo)
+      }
+      return result
+    })
+
+  const handleRemoveRepo = (repo: string) => {
+    setRemoveError(null)
+    // Repo slugs are case-insensitive, so compare on lower-case. Only fall
+    // back to All once removal actually succeeds and the segment would
+    // disappear (no reviews keep it visible) — a failed remove must not
+    // navigate away from a repo that's still watched and present.
+    const key = repo.toLowerCase()
+    const wouldDisappear =
+      activeRepo.toLowerCase() === key && !(prsData ?? []).some((p) => p.repo.toLowerCase() === key)
+    void removeRepo({ repo })
+      .then(() => {
+        if (wouldDisappear) setActiveRepo("all")
+      })
+      .catch(() => {
+        setRemoveError(`Couldn’t remove ${repoShort(repo)} — try again`)
+      })
+  }
+
   const repoFiltered = useMemo(() => {
     const all = prsData ?? []
-    return activeRepo === "all" ? all : all.filter((p) => p.repo === activeRepo)
+    if (activeRepo === "all") return all
+    // Repo slugs are case-insensitive; `activeRepo` may carry the stored casing
+    // while `p.repo` carries GitHub's canonical casing.
+    const key = activeRepo.toLowerCase()
+    return all.filter((p) => p.repo.toLowerCase() === key)
   }, [prsData, activeRepo])
 
   const selectedPr = repoFiltered.find((p) => p.key === selectedKey) ?? repoFiltered[0] ?? null
@@ -670,14 +864,6 @@ export default function App() {
             <Loader2 className="size-4 animate-spin" />
             Loading reviews…
           </div>
-        ) : prs.length === 0 ? (
-          <div className="flex min-h-[60vh] flex-col items-center justify-center gap-2 text-center text-sm text-zinc-500">
-            <GitPullRequest className="size-6 text-zinc-700" />
-            <div>No reviews yet.</div>
-            <div className="text-xs text-zinc-600">
-              The worker hasn’t reviewed any pull requests on the watched repos.
-            </div>
-          </div>
         ) : (
           <ReviewConsole
             allPrs={prs}
@@ -686,8 +872,11 @@ export default function App() {
             activeRepo={activeRepo}
             selectedPr={selectedPr}
             compact={compact}
-            onRepoChange={setActiveRepo}
+            onRepoChange={handleRepoChange}
             onSelect={setSelectedKey}
+            onAddRepo={handleAddRepo}
+            onRemoveRepo={handleRemoveRepo}
+            removeError={removeError}
           />
         )}
       </main>
