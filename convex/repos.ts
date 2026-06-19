@@ -25,9 +25,17 @@ export const setWatched = mutation({
   args: { repos: v.array(v.string()) },
   returns: v.null(),
   handler: async (ctx, { repos }) => {
+    // Read the watch set once (config-scale: bounded by the dashboard/worker
+    // config, so a single `.collect()` is acceptable) and check membership
+    // case-insensitively in memory, avoiding an O(n²) collect-per-repo loop.
+    const rows = await ctx.db.query("watchedRepos").collect()
+    const watched = new Set(rows.map((r) => r.repo.toLowerCase()))
     for (const repo of repos) {
-      const existing = await getRepoRow(ctx, repo)
-      if (!existing) await ctx.db.insert("watchedRepos", { repo, updatedAt: Date.now() })
+      const key = repo.toLowerCase()
+      if (!watched.has(key)) {
+        await ctx.db.insert("watchedRepos", { repo, updatedAt: Date.now() })
+        watched.add(key)
+      }
     }
     return null
   },

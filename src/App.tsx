@@ -296,8 +296,15 @@ function RepoSegmented({
   const [adding, setAdding] = useState(false)
   const [value, setValue] = useState("")
   const [error, setError] = useState<string | null>(null)
-  const watched = new Set(repos)
-  const repoSet = Array.from(new Set([...repos, ...prs.map((p) => p.repo)])).sort()
+  // GitHub repo slugs are case-insensitive, so compare on lower-case throughout.
+  // `repos` carries the stored (user-typed) casing; `prs[].repo` carries GitHub's
+  // canonical casing. Dedup on the lower-cased key, preferring the canonical
+  // casing from `prs` so each real repo renders as exactly one segment.
+  const watched = new Set(repos.map((r) => r.toLowerCase()))
+  const byKey = new Map<string, string>()
+  for (const repo of repos) byKey.set(repo.toLowerCase(), repo)
+  for (const pr of prs) byKey.set(pr.repo.toLowerCase(), pr.repo)
+  const repoSet = Array.from(byKey.values()).sort()
 
   // Only clear/close on a real add; on invalid/exists keep the input open and
   // surface why, so the backend's verdict reaches the user instead of vanishing.
@@ -344,8 +351,10 @@ function RepoSegmented({
           <span className="text-[10px] text-zinc-500">{prs.length}</span>
         </button>
         {repoSet.map((repo) => {
-          const active = activeRepo === repo
-          const count = prs.filter((p) => p.repo === repo).length
+          const key = repo.toLowerCase()
+          const active = activeRepo.toLowerCase() === key
+          const count = prs.filter((p) => p.repo.toLowerCase() === key).length
+          const isWatched = watched.has(key)
           return (
             <div
               key={repo}
@@ -360,13 +369,13 @@ function RepoSegmented({
                 className={cn(
                   "inline-flex items-center gap-1.5 py-1.5 pl-3 text-xs font-medium transition",
                   active ? "text-zinc-100" : "text-zinc-400 group-hover/seg:text-zinc-200",
-                  watched.has(repo) ? "pr-1.5" : "pr-3",
+                  isWatched ? "pr-1.5" : "pr-3",
                 )}
               >
                 {repoShort(repo)}
                 <span className="text-[10px] text-zinc-500">{count}</span>
               </button>
-              {watched.has(repo) && (
+              {isWatched && (
                 <button
                   type="button"
                   title={`Remove ${repo}`}
@@ -408,7 +417,11 @@ function RepoSegmented({
           >
             Add
           </button>
-          {error && <span className="text-xs text-red-300">{error}</span>}
+          {error && (
+            <span className="text-xs text-red-300" role="alert">
+              {error}
+            </span>
+          )}
         </div>
       ) : (
         <button
@@ -772,15 +785,21 @@ export default function App() {
       setRemoveError(`Couldn’t remove ${repoShort(repo)} — try again`)
     })
     // Stay on the repo if it still has reviews (its segment remains); only fall
-    // back to All when removing it makes it disappear entirely.
-    if (activeRepo === repo && !(prsData ?? []).some((p) => p.repo === repo)) {
+    // back to All when removing it makes it disappear entirely. Repo slugs are
+    // case-insensitive, so compare on lower-case.
+    const key = repo.toLowerCase()
+    if (activeRepo.toLowerCase() === key && !(prsData ?? []).some((p) => p.repo.toLowerCase() === key)) {
       setActiveRepo("all")
     }
   }
 
   const repoFiltered = useMemo(() => {
     const all = prsData ?? []
-    return activeRepo === "all" ? all : all.filter((p) => p.repo === activeRepo)
+    if (activeRepo === "all") return all
+    // Repo slugs are case-insensitive; `activeRepo` may carry the stored casing
+    // while `p.repo` carries GitHub's canonical casing.
+    const key = activeRepo.toLowerCase()
+    return all.filter((p) => p.repo.toLowerCase() === key)
   }, [prsData, activeRepo])
 
   const selectedPr = repoFiltered.find((p) => p.key === selectedKey) ?? repoFiltered[0] ?? null
