@@ -129,7 +129,9 @@ git push ──▶ webhook ──▶ reviews row (queued→reviewing→reviewed)
 ```bash
 node worker/await.mjs <pr> --repo owner/name
 # defaults: --repo from `gh repo view`, --head from `gh pr view <pr>`,
-#           --timeout 1800, JSON on stdout, heartbeat on stderr (--quiet to mute)
+#           --timeout 1800, heartbeat on stderr (--quiet to mute).
+# stdout is always machine-readable JSON; `--json` is accepted for clarity but is
+# the default behavior — there is no `--no-json` opposite flag.
 ```
 
 Head-SHA keyed, so it waits for the review of *this* push (a re-push enqueues a

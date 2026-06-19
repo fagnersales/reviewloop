@@ -47,10 +47,10 @@ function envLocalUrl() {
 const cfg = loadConfig()
 const CONVEX_URL = process.env.PRR_CONVEX_URL || cfg.convexUrl || envLocalUrl()
 
-// The query reference. Prefer the typed `api.reviews.getByPrSha` (present after
-// codegen); fall back to the string function reference so the CLI still runs if
-// codegen hasn't picked it up yet.
-const GET_BY_PR_SHA = api?.reviews?.getByPrSha ?? "reviews:getByPrSha"
+// The query reference. `api` is `anyApi` (a Proxy), so this always resolves to
+// the `reviews:getByPrSha` reference regardless of codegen — whether the query
+// is actually *deployed* is decided at runtime and surfaced via onQueryError.
+const GET_BY_PR_SHA = api.reviews.getByPrSha
 
 const HELP = `prr-await — block until a PR's review finishes
 
@@ -67,7 +67,7 @@ Options:
   --repo <owner/name>  target repo (default: \`gh repo view\` of the cwd)
   --head <sha>         PR head SHA (default: \`gh pr view <pr> --json headRefOid\`)
   --timeout <seconds>  give up after this many seconds (default: 1800)
-  --json               machine-readable stdout (default: on)
+  --json               accepted for clarity; stdout is always JSON (no opposite flag)
   --quiet              suppress the stderr heartbeat
   -h, --help           show this help
 
