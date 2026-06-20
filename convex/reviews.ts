@@ -296,8 +296,13 @@ export const clearStaleAcks = internalMutation({
     }
     let cleared = 0
     for (const r of latest.values()) {
+      // A merged/closed PR can't be picked up again, so clearing its ack buys no
+      // honesty — it only erases the "Agent picked it up" history of real work.
+      // Skip it (matches the "superseded acks are kept" rule); only live reviewed
+      // passes can go stale.
       if (
         r.status === "reviewed" &&
+        r.prState == null &&
         r.ackedAt != null &&
         now - r.ackedAt > ACK_STALE_MS
       ) {
