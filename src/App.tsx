@@ -875,6 +875,7 @@ function EventDetail({
           </p>
         )}
         {pass?.reviewUrl && <GitHubLink href={pass.reviewUrl} label="View review on GitHub" />}
+        {pass && <PassSessionLog reviewId={pass._id} />}
       </div>
     )
   }
@@ -923,6 +924,7 @@ function EventDetail({
           title="The review run didn’t complete"
           body={pass?.error ?? event.body}
         />
+        {pass && <PassSessionLog reviewId={pass._id} />}
       </div>
     )
   }
@@ -1048,6 +1050,22 @@ function LiveReviewLog({
   return (
     <div className={className}>
       <CloudLogConsole lines={lines} streaming title="Cloud review" />
+    </div>
+  )
+}
+
+// The persisted log of a *finished* pass — the durable record that outlives the
+// live ticker. Rendered non-streaming, so every line shows its severity dot,
+// including the terminal green `done` / red `error` (the live ticker can't: its
+// newest line is always the blue active pulse, and it unmounts the moment the
+// pass leaves "reviewing"). Self-hides for passes with no persisted lines, e.g.
+// ones reviewed before this log existed.
+function PassSessionLog({ reviewId }: { reviewId: Pass["_id"] }) {
+  const lines = useQuery(api.reviews.reviewLog, { reviewId }) ?? []
+  if (lines.length === 0) return null
+  return (
+    <div className="mt-4">
+      <CloudLogConsole lines={lines} streaming={false} title="Session log" />
     </div>
   )
 }

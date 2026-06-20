@@ -1,10 +1,27 @@
 import { v } from "convex/values"
 import { mutation, query, internalMutation } from "./_generated/server"
 import type { MutationCtx } from "./_generated/server"
-import type { Doc } from "./_generated/dataModel"
+import type { Doc, Id } from "./_generated/dataModel"
 import { commitInfo, logKind, reviewFields, reviewStatus } from "./schema"
 
 const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed worker
+
+// Most progress lines `reviewLog` returns / a clear sweeps in one mutation. A
+// 25-min run at the worker's ~1/s throttle stays well under this; the bound just
+// keeps the read/write sizes safe if the timeout is raised or a run is chatty.
+const REVIEW_LOG_MAX = 2000
+
+// Delete a review's persisted progress lines (bounded). Used when a stale
+// "reviewing" row is requeued so the retry — which reuses the same `reviews`
+// row, hence the same `reviewId` — starts with a fresh log instead of
+// concatenating onto the crashed attempt's lines.
+async function clearReviewLog(ctx: MutationCtx, reviewId: Id<"reviews">) {
+  const prior = await ctx.db
+    .query("reviewLogLines")
+    .withIndex("by_review", (q) => q.eq("reviewId", reviewId))
+    .take(REVIEW_LOG_MAX)
+  for (const l of prior) await ctx.db.delete(l._id)
+}
 
 // Full row shape (system fields + columns) for query return validators.
 const reviewDoc = v.object({
@@ -244,6 +261,9 @@ export const requeueStale = internalMutation({
     let requeued = 0
     for (const r of reviewing) {
       if (now - (r.startedAt ?? r.queuedAt) > STALE_MS) {
+        // Drop the crashed attempt's log so the retry's lines don't concatenate
+        // onto it under the shared reviewId.
+        await clearReviewLog(ctx, r._id)
         await ctx.db.patch(r._id, {
           status: "queued",
           startedAt: undefined,
@@ -322,24 +342,26 @@ const reviewLogLine = v.object({
   kind: v.optional(logKind),
 })
 
-// The cloud-log console subscribes to this: the full, ordered progress log for
-// one review pass (the `reviews` row id), oldest first. Replaces the old
-// client-side `useProgressHistory` tail — every line the worker streamed is
-// here, so a viewer that opens mid-review (or remounts on PR reselect) still
-// sees the whole session. The by_review index returns a review's lines in
-// insertion order; `.take` keeps the read bounded (a 25-min run at the worker's
-// ~1/s throttle is well under this cap, so in practice nothing is dropped).
-const REVIEW_LOG_MAX = 2000
+// The cloud-log console subscribes to this: the ordered progress log for one
+// review pass (the `reviews` row id), oldest first. Replaces the old client-side
+// `useProgressHistory` tail — every line the worker streamed is here, so a
+// viewer that opens mid-review (or remounts on PR reselect) sees the whole
+// session. A 25-min run at the worker's ~1/s throttle stays under the cap, so in
+// practice nothing is dropped; if a run *does* exceed it we keep the newest
+// lines (the live tail) rather than freezing the ticker on the run's start —
+// hence `order("desc")` then reverse back to chronological for display.
 export const reviewLog = query({
   args: { reviewId: v.id("reviews") },
   returns: v.array(reviewLogLine),
   handler: async (ctx, { reviewId }) => {
-    const lines = await ctx.db
+    const newestFirst = await ctx.db
       .query("reviewLogLines")
       .withIndex("by_review", (q) => q.eq("reviewId", reviewId))
-      .order("asc")
+      .order("desc")
       .take(REVIEW_LOG_MAX)
-    return lines.map((l) => ({ id: l._id, text: l.text, at: l.ts, kind: l.kind }))
+    return newestFirst
+      .reverse()
+      .map((l) => ({ id: l._id, text: l.text, at: l.ts, kind: l.kind }))
   },
 })
 

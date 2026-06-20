@@ -88,7 +88,8 @@ export default defineSchema({
   // order.
   reviewLogLines: defineTable({
     reviewId: v.id("reviews"),
-    // worker wall-clock when the line was emitted (ms) — drives the ticker clock
+    // ms timestamp the append mutation stamped (Convex server time) — drives the
+    // ticker's clock column. Within ~the throttle interval of the worker's emit.
     ts: v.number(),
     text: v.string(),
     kind: v.optional(logKind),
