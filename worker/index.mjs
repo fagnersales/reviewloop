@@ -240,6 +240,8 @@ async function claimAndRun(row) {
   claiming.delete(id)
   if (!won) return
   inflight.add(id)
+  // Capture this push's commits alongside the review (don't block it on GitHub).
+  captureCommits(row).catch((e) => log(`captureCommits error #${row.prNumber}:`, String(e)))
   runReview(row).finally(() => {
     inflight.delete(id)
     pump()
@@ -457,6 +459,90 @@ async function latestReviewUrl(repo, prNumber, headSha) {
     return pick?.html_url
   } catch {
     return undefined
+  }
+}
+
+// Capture the commits that landed in this push (this review turn) and store them
+// on the row, so the dashboard can show their message/author/LOC without its own
+// GitHub auth. One GraphQL call gets the PR's commits with per-commit LOC; we then
+// slice to just the commits after the previous pass's head. Best-effort: any
+// failure here is logged and dropped — it never blocks or fails the review.
+async function captureCommits(row) {
+  const [owner, name] = row.repo.split("/")
+  if (!owner || !name) return
+  const query = `query($owner:String!,$name:String!,$num:Int!){
+    repository(owner:$owner,name:$name){
+      pullRequest(number:$num){
+        commits(last:100){ nodes{ commit{
+          oid messageHeadline additions deletions
+          author{ name avatarUrl user{ login } }
+        }}}
+      }
+    }
+  }`
+  const { code, out, err } = await run("gh", [
+    "api",
+    "graphql",
+    "-f",
+    `query=${query}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    "-F",
+    `num=${row.prNumber}`,
+  ])
+  if (code !== 0) {
+    log(`captureCommits #${row.prNumber}: gh graphql failed:`, (err || "").trim().split("\n").pop())
+    return
+  }
+  let nodes
+  try {
+    nodes = JSON.parse(out)?.data?.repository?.pullRequest?.commits?.nodes
+  } catch {
+    return
+  }
+  if (!Array.isArray(nodes)) return
+  const all = nodes.map((n) => n.commit).filter(Boolean)
+  if (all.length === 0) return
+
+  // Slice to this turn: everything after the previous pass's head, up to this head.
+  let prior = null
+  try {
+    prior = await client.query(api.reviews.priorHead, {
+      repo: row.repo,
+      prNumber: row.prNumber,
+      headSha: row.headSha,
+      queuedAt: row.queuedAt,
+    })
+  } catch {
+    /* no prior boundary -> treat the whole list as this turn */
+  }
+  let turn = all
+  if (prior) {
+    const idx = all.findIndex((c) => c.oid === prior)
+    if (idx >= 0) turn = all.slice(idx + 1)
+  }
+  const headIdx = turn.findIndex((c) => c.oid === row.headSha)
+  if (headIdx >= 0) turn = turn.slice(0, headIdx + 1)
+  if (turn.length === 0) return
+
+  const commits = turn.map((c) => {
+    const entry = {
+      sha: c.oid,
+      message: c.messageHeadline || "(no message)",
+      author: c.author?.user?.login || c.author?.name || "unknown",
+      additions: c.additions ?? 0,
+      deletions: c.deletions ?? 0,
+    }
+    if (c.author?.avatarUrl) entry.avatarUrl = c.author.avatarUrl
+    return entry
+  })
+  try {
+    await client.mutation(api.reviews.setCommits, { id: row._id, commits })
+    log(`captured ${commits.length} commit(s) for #${row.prNumber} @${row.headSha.slice(0, 7)}`)
+  } catch (e) {
+    log(`setCommits error #${row.prNumber}:`, String(e))
   }
 }
 

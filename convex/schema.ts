@@ -13,6 +13,17 @@ export const reviewStatus = v.union(
   v.literal("failed"),
 )
 
+// One commit in a PR push, captured by the worker from GitHub (the dashboard has
+// no GitHub auth of its own) — the commits that landed in a single review turn.
+export const commitInfo = v.object({
+  sha: v.string(),
+  message: v.string(),
+  author: v.string(), // GitHub login, or the git author name when unlinked
+  avatarUrl: v.optional(v.string()),
+  additions: v.number(),
+  deletions: v.number(),
+})
+
 // The non-system columns of a `reviews` row — reused by query return validators.
 export const reviewFields = {
   repo: v.string(), // "owner/name"
@@ -39,6 +50,8 @@ export const reviewFields = {
   p2: v.optional(v.number()),
   report: v.optional(v.string()),
   error: v.optional(v.string()),
+  // the commits that landed in this push, captured by the worker from GitHub
+  commits: v.optional(v.array(commitInfo)),
 }
 
 export default defineSchema({

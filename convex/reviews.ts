@@ -2,7 +2,7 @@ import { v } from "convex/values"
 import { mutation, query, internalMutation } from "./_generated/server"
 import type { MutationCtx } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
-import { reviewFields, reviewStatus } from "./schema"
+import { commitInfo, reviewFields, reviewStatus } from "./schema"
 
 const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed worker
 
@@ -170,6 +170,43 @@ export const finish = mutation({
   },
 })
 
+// Worker stores the commits that landed in this push (captured from GitHub) so
+// the dashboard can show what changed this turn without its own GitHub auth.
+export const setCommits = mutation({
+  args: { id: v.id("reviews"), commits: v.array(commitInfo) },
+  returns: v.null(),
+  handler: async (ctx, { id, commits }) => {
+    const row = await ctx.db.get(id)
+    if (!row) return null
+    await ctx.db.patch(id, { commits })
+    return null
+  },
+})
+
+// The head SHA of the PR's most recent *earlier* pass — a different commit queued
+// before this one. The worker uses it as the lower bound when slicing "this
+// push's" commits out of the PR's full commit list. Null when this is the PR's
+// first pass (so the whole list is this turn's).
+export const priorHead = query({
+  args: {
+    repo: v.string(),
+    prNumber: v.number(),
+    headSha: v.string(),
+    queuedAt: v.number(),
+  },
+  returns: v.union(v.null(), v.string()),
+  handler: async (ctx, { repo, prNumber, headSha, queuedAt }) => {
+    const rows = await ctx.db
+      .query("reviews")
+      .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
+      .collect()
+    const prior = rows
+      .filter((r) => r.headSha !== headSha && r.queuedAt <= queuedAt)
+      .sort((a, b) => b.queuedAt - a.queuedAt)[0]
+    return prior?.headSha ?? null
+  },
+})
+
 // Cron-driven crash recovery: a "reviewing" row whose worker died gets requeued.
 export const requeueStale = internalMutation({
   args: {},
@@ -306,6 +343,7 @@ const prPass = v.object({
   progress: v.optional(v.string()),
   error: v.optional(v.string()),
   worker: v.optional(v.string()),
+  commits: v.optional(v.array(commitInfo)),
 })
 
 // A PR = every review pass for one (repo, prNumber), with the latest pass's
@@ -403,6 +441,7 @@ export const prs = query({
           progress: r.progress,
           error: r.error,
           worker: r.worker,
+          commits: r.commits,
         })),
       })
     }
