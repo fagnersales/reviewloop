@@ -432,3 +432,58 @@ export const prs = query({
     return result
   },
 })
+
+// --- one-off backfill tooling (worker/backfill.mjs) ---------------------------
+// Existing rows predate prCreatedAt/closedAt capture, so old PRs show the
+// queuedAt/updatedAt fallback. These let a `gh`-driven script fetch each PR's
+// real GitHub timestamps and patch them in. Bounded by a personal console's row
+// count, so the single collect() is acceptable for a one-shot tool.
+
+// Distinct PRs with at least one row still missing a timestamp it should have:
+// every PR wants prCreatedAt; a merged/closed PR also wants closedAt.
+export const prsNeedingTimestamps = query({
+  args: {},
+  returns: v.array(v.object({ repo: v.string(), prNumber: v.number() })),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("reviews").collect()
+    const need = new Map<string, { repo: string; prNumber: number }>()
+    for (const r of rows) {
+      const needsCreated = r.prCreatedAt == null
+      const needsClosed = r.prState != null && r.closedAt == null
+      if (needsCreated || needsClosed) {
+        const key = `${r.repo}#${r.prNumber}`
+        if (!need.has(key)) need.set(key, { repo: r.repo, prNumber: r.prNumber })
+      }
+    }
+    return [...need.values()]
+  },
+})
+
+// Patch GitHub timestamps onto every row of one PR, but only where the field is
+// still empty — never clobber a value a real webhook already set. Idempotent.
+export const backfillPrTimestamps = mutation({
+  args: {
+    repo: v.string(),
+    prNumber: v.number(),
+    prCreatedAt: v.optional(v.number()),
+    closedAt: v.optional(v.number()),
+  },
+  returns: v.object({ patched: v.number() }),
+  handler: async (ctx, { repo, prNumber, prCreatedAt, closedAt }) => {
+    const rows = await ctx.db
+      .query("reviews")
+      .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
+      .collect()
+    let patched = 0
+    for (const r of rows) {
+      const patch: { prCreatedAt?: number; closedAt?: number } = {}
+      if (prCreatedAt != null && r.prCreatedAt == null) patch.prCreatedAt = prCreatedAt
+      if (closedAt != null && r.closedAt == null) patch.closedAt = closedAt
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(r._id, patch)
+        patched++
+      }
+    }
+    return { patched }
+  },
+})
