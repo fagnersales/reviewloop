@@ -765,6 +765,21 @@ function ReviewDetail({
                 </p>
               </div>
             </div>
+          ) : pr.status === "failed" ? (
+            // A failed first pass has no report either; say so plainly instead
+            // of falling through to the "not posted yet" copy, which would read
+            // as still-pending when the run actually errored out.
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+              <span className="flex size-10 items-center justify-center rounded-full border border-red-400/25 bg-red-400/10 text-red-300">
+                <AlertTriangle className="size-5" />
+              </span>
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-zinc-200">Review didn’t complete</p>
+                <p className="mx-auto max-w-[34ch] text-xs leading-5 text-zinc-500">
+                  The latest run errored or timed out — see the review loop for details.
+                </p>
+              </div>
+            </div>
           ) : (
             <div className="flex flex-1 flex-col items-center justify-center px-6 py-12 text-center">
               <p className="max-w-[34ch] text-sm leading-6 text-zinc-500">
