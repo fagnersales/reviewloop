@@ -449,11 +449,13 @@ function PrList({
   selectedKey,
   onSelect,
   emptyLabel,
+  showRepo,
 }: {
   prs: Pr[]
   selectedKey: string | null
   onSelect: (key: string) => void
   emptyLabel: string
+  showRepo: boolean
 }) {
   return (
     <div className="space-y-1.5">
@@ -470,7 +472,12 @@ function PrList({
           )}
         >
           <div className="flex items-center justify-between gap-2">
-            <span className="truncate text-sm font-medium">#{pr.prNumber}</span>
+            <span className="flex min-w-0 items-baseline gap-1.5 text-sm font-medium">
+              {showRepo && (
+                <span className="truncate text-zinc-500">{repoShort(pr.repo)}</span>
+              )}
+              <span className="shrink-0">#{pr.prNumber}</span>
+            </span>
             <ScoreBadge score={pr.confidence} />
           </div>
           <div className="mt-1.5 flex items-center justify-between gap-2">
@@ -756,6 +763,7 @@ function ReviewConsole({
               prs={visible}
               selectedKey={selectedPr?.key ?? null}
               onSelect={onSelect}
+              showRepo={activeRepo === "all"}
               emptyLabel={
                 trimmed
                   ? "No PRs match your search."
