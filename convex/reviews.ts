@@ -6,6 +6,13 @@ import { commitInfo, reviewFields, reviewStatus } from "./schema"
 
 const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed worker
 
+// A fix-agent ack older than this with no fix pushed since = the agent stalled or
+// gave up. `clearStaleAcks` drops it so the PR flips back to "Awaiting agent" and
+// gets picked up again, instead of showing a forever-stale "In progress". Kept
+// generous: a false clear here causes duplicate pickup (worse than a slightly
+// stale badge), and a real review fix can legitimately take a while.
+const ACK_STALE_MS = 90 * 60 * 1000
+
 // Full row shape (system fields + columns) for query return validators.
 const reviewDoc = v.object({
   _id: v.id("reviews"),
@@ -178,6 +185,127 @@ export const finish = mutation({
       ...rest,
     })
     return null
+  },
+})
+
+// A fix agent acks (or, with `clear`, releases) a review pass — the entrypoint
+// behind the `prr-ack` CLI. Acking stamps the `reviewed` row so the console shows
+// "In progress" instead of "Awaiting agent"; it's the one fact the console can't
+// observe on its own (an agent has started but hasn't pushed a commit yet).
+//
+// Target resolution mirrors getByPrSha: with `headSha`, the row for that exact
+// commit; without it, the PR's most recent *reviewed* pass (the review an agent
+// would naturally pick up). Only a `reviewed`, still-open pass is ackable — there's
+// nothing to pick up on a queued/reviewing/failed row or a merged/closed PR.
+export const ack = mutation({
+  args: {
+    repo: v.string(),
+    prNumber: v.number(),
+    headSha: v.optional(v.string()),
+    by: v.string(),
+    // release a prior ack (agent bailed) instead of recording one
+    clear: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    ok: v.boolean(),
+    // why it didn't take, for the CLI to surface (absent on success)
+    reason: v.optional(v.string()),
+    headSha: v.optional(v.string()),
+    ackedAt: v.optional(v.number()),
+    ackedBy: v.optional(v.string()),
+  }),
+  handler: async (ctx, { repo, prNumber, headSha, by, clear }) => {
+    const rows = await ctx.db
+      .query("reviews")
+      .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
+      .collect()
+    if (rows.length === 0) return { ok: false, reason: "no review row for this PR" }
+
+    // Pick the pass to ack: the exact head SHA if given (preferring its reviewed
+    // row over a stale failed attempt), else the PR's newest reviewed pass.
+    let target
+    if (headSha) {
+      const forSha = rows.filter((r) => r.headSha === headSha)
+      if (forSha.length === 0)
+        return { ok: false, reason: `no review row for ${headSha.slice(0, 7)}` }
+      target =
+        forSha.find((r) => r.status === "reviewed") ??
+        forSha.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+    } else {
+      const reviewed = rows.filter((r) => r.status === "reviewed")
+      if (reviewed.length === 0)
+        return { ok: false, reason: "no reviewed pass yet — wait for the review" }
+      target = reviewed.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+    }
+
+    if (target.status !== "reviewed")
+      return {
+        ok: false,
+        reason: `pass is ${target.status}, not reviewed`,
+        headSha: target.headSha,
+      }
+    if (target.prState)
+      return { ok: false, reason: `PR is ${target.prState}`, headSha: target.headSha }
+
+    if (clear) {
+      await ctx.db.patch(target._id, { ackedAt: undefined, ackedBy: undefined })
+      return { ok: true, headSha: target.headSha }
+    }
+    const ackedAt = Date.now()
+    await ctx.db.patch(target._id, { ackedAt, ackedBy: by })
+    return { ok: true, headSha: target.headSha, ackedAt, ackedBy: by }
+  },
+})
+
+// Cron-driven honesty: a still-current reviewed pass whose ack has gone stale (the
+// agent acked but never pushed a fix — see ACK_STALE_MS) gets its ack dropped, so
+// the board reverts from "In progress" to "Awaiting agent" and the PR is picked up
+// again. Only the PR's *latest* pass is considered — an ack on a superseded pass is
+// a true historical record (the agent did push a fix), so it's left intact.
+export const clearStaleAcks = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    const now = Date.now()
+    // Reconstruct each PR's latest pass from bounded recent scans, mirroring prs().
+    const reviewing = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "reviewing"))
+      .order("desc")
+      .take(25)
+    const queued = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "queued"))
+      .order("desc")
+      .take(50)
+    const reviewed = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "reviewed"))
+      .order("desc")
+      .take(100)
+    const failed = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "failed"))
+      .order("desc")
+      .take(50)
+    const latest = new Map<string, Doc<"reviews">>()
+    for (const r of [...reviewing, ...queued, ...reviewed, ...failed]) {
+      const key = `${r.repo}#${r.prNumber}`
+      const cur = latest.get(key)
+      if (!cur || r.queuedAt > cur.queuedAt) latest.set(key, r)
+    }
+    let cleared = 0
+    for (const r of latest.values()) {
+      if (
+        r.status === "reviewed" &&
+        r.ackedAt != null &&
+        now - r.ackedAt > ACK_STALE_MS
+      ) {
+        await ctx.db.patch(r._id, { ackedAt: undefined, ackedBy: undefined })
+        cleared++
+      }
+    }
+    return cleared
   },
 })
 
@@ -355,6 +483,8 @@ const prPass = v.object({
   error: v.optional(v.string()),
   worker: v.optional(v.string()),
   commits: v.optional(v.array(commitInfo)),
+  ackedAt: v.optional(v.number()),
+  ackedBy: v.optional(v.string()),
 })
 
 // A PR = every review pass for one (repo, prNumber), with the latest pass's
@@ -374,6 +504,10 @@ const prDoc = v.object({
   p1: v.optional(v.number()),
   p2: v.optional(v.number()),
   progress: v.optional(v.string()),
+  // The latest pass's ack (a fix agent picked up its review). Drives the
+  // "Awaiting agent" vs "In progress" distinction on the list/header badge.
+  ackedAt: v.optional(v.number()),
+  ackedBy: v.optional(v.string()),
   updatedAt: v.number(),
   // GitHub lifecycle anchors for the list/header timing. Optional: a PR whose
   // rows predate timestamp capture has neither, and the client falls back to
@@ -442,6 +576,8 @@ export const prs = query({
         p1: latest.p1,
         p2: latest.p2,
         progress: latest.progress,
+        ackedAt: latest.ackedAt,
+        ackedBy: latest.ackedBy,
         updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.queuedAt,
         prCreatedAt,
         closedAt,
@@ -463,6 +599,8 @@ export const prs = query({
           error: r.error,
           worker: r.worker,
           commits: r.commits,
+          ackedAt: r.ackedAt,
+          ackedBy: r.ackedBy,
         })),
       })
     }
