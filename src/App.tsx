@@ -656,8 +656,8 @@ function ReviewDetail({
         }
       : pr.status === "queued"
         ? {
-            tone: "border-sky-400/25 bg-sky-400/10 text-sky-300",
-            icon: <Loader2 className="size-5 animate-spin" />,
+            tone: "border-zinc-700 bg-zinc-900 text-zinc-400",
+            icon: <Clock3 className="size-5" />,
             title: "Queued for review",
             body: "Waiting for an available review worker. The summary will appear here once the review is posted.",
           }
