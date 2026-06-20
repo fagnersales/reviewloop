@@ -759,7 +759,7 @@ function ReviewDetail({
             <Timeline events={events} />
           </div>
 
-          <div className={cn("flex flex-col p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
+          <div className={cn("p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
             <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
               <Sparkles className="size-3.5" />
               Summary
