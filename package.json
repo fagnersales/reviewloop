@@ -10,10 +10,12 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "worker": "node worker/index.mjs",
-    "await": "node worker/await.mjs"
+    "await": "node worker/await.mjs",
+    "ack": "node worker/ack.mjs"
   },
   "bin": {
-    "prr-await": "worker/await.mjs"
+    "prr-await": "worker/await.mjs",
+    "prr-ack": "worker/ack.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

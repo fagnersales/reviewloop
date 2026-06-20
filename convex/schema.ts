@@ -48,6 +48,16 @@ export const reviewFields = {
   closedAt: v.optional(v.number()),
   // PR lifecycle once GitHub closes it: merged, or closed-without-merging
   prState: v.optional(v.union(v.literal("merged"), v.literal("closed"))),
+  // A fix agent's acknowledgement that it has picked up THIS review pass and is
+  // working on the findings (stamped by `reviews.ack` / the `prr-ack` CLI). It's
+  // the difference the console can't otherwise know: a `reviewed` row with no ack
+  // is "Awaiting agent" (nobody's on it), one with an ack is "In progress". Set
+  // only on a `reviewed` row; cleared by `clearStaleAcks` when an ack goes stale
+  // (the agent never pushed a fix), so the board never shows a false "In progress".
+  //   ackedAt : when the agent acked (ms)
+  //   ackedBy : who acked — agent/host label, free-form (e.g. "claude@macbook")
+  ackedAt: v.optional(v.number()),
+  ackedBy: v.optional(v.string()),
   // results, filled by `finish`
   reviewUrl: v.optional(v.string()),
   confidence: v.optional(v.number()),

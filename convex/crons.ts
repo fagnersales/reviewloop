@@ -12,4 +12,14 @@ crons.interval(
   {},
 )
 
+// Honesty for the agent-ack signal: drop acks a fix agent left on a reviewed pass
+// but never followed with a commit (see ACK_STALE_MS in reviews.ts), so the board
+// reverts from "In progress" to "Awaiting agent" instead of lying indefinitely.
+crons.interval(
+  "clear stale acks",
+  { minutes: 10 },
+  internal.reviews.clearStaleAcks,
+  {},
+)
+
 export default crons
