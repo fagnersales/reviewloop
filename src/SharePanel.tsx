@@ -51,8 +51,6 @@ export function SharePanel() {
 
       {open && (
         <div className="absolute right-0 z-30 mt-2 w-72 rounded-lg border border-zinc-800 bg-zinc-950 p-4 shadow-xl">
-          <div className="mb-3 text-xs font-medium text-zinc-300">Open the hosted console</div>
-
           {!PUBLIC_CONSOLE_URL && (
             <p className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] leading-snug text-amber-200/90">
               Set <code className="font-mono">VITE_PUBLIC_CONSOLE_URL</code> in{" "}
@@ -61,11 +59,10 @@ export function SharePanel() {
             </p>
           )}
 
-          <div className="flex flex-col items-center gap-3">
+          <div className="flex flex-col items-center">
             <div className="rounded-md bg-white p-2">
               <QRCodeSVG value={link} size={148} marginSize={0} />
             </div>
-            <span className="text-[11px] text-zinc-600">Scan to open on your phone</span>
           </div>
 
           <div className="mt-4 space-y-2">
