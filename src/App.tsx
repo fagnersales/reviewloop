@@ -26,6 +26,7 @@ import {
 import { api } from "../convex/_generated/api"
 import { cn } from "./lib/cn"
 import { ago } from "./lib/format"
+import { CloudLogConsole, useProgressHistory } from "./components/cloud-log"
 
 type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
 type AddResult = "added" | "exists" | "invalid"
@@ -618,6 +619,21 @@ function ReviewReport({ report }: { report: string }) {
 // text until hovered, when they reveal their clickability.
 const META_LINK = "rounded-sm underline-offset-2 transition hover:text-zinc-200 hover:underline"
 
+// The live cloud-review log. The backend streams a single `progress` line per
+// `reviews` row; `useProgressHistory` accumulates the distinct values this client
+// observes into a history, which the ticker animates (last few lines, expandable
+// to the whole log). Keyed by PR + head SHA at the call site so each review pass
+// starts a fresh history.
+function LiveReviewLog({ progress }: { progress?: string }) {
+  const lines = useProgressHistory(progress)
+  if (lines.length === 0) return null
+  return (
+    <div className="mt-1 w-full max-w-md text-left">
+      <CloudLogConsole lines={lines} streaming title="Cloud review" />
+    </div>
+  )
+}
+
 function ReviewDetail({
   pr,
   compact,
@@ -794,15 +810,11 @@ function ReviewDetail({
             <p className="text-sm font-medium text-zinc-200">{firstReview.title}</p>
             <p className="mx-auto max-w-[42ch] text-xs leading-5 text-zinc-500">{firstReview.body}</p>
           </div>
-          {pr.status === "reviewing" && pr.progress && (
-            // The live line `claude -p /pr-review` is on right now — the bit the
-            // timeline used to show, surfaced here since the timeline is hidden.
-            <p
-              title={pr.progress}
-              className="mx-auto max-w-[46ch] truncate rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 font-mono text-[11px] text-zinc-400"
-            >
-              {pr.progress}
-            </p>
+          {pr.status === "reviewing" && (
+            // The live cloud-review log `claude -p /pr-review` is producing right
+            // now — the last lines, animated, expandable to the whole log. Keyed
+            // per review pass so switching PRs / new commits start fresh.
+            <LiveReviewLog key={`${pr.key}:${pr.headSha}`} progress={pr.progress} />
           )}
         </div>
       )}

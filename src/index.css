@@ -31,3 +31,52 @@ body {
 .pulse-dot {
   animation: pulse-dot 1.6s ease-in-out infinite;
 }
+
+/* ── Cloud-log: animated streaming review log ───────────────────────────────
+   Lightweight, dependency-free keyframes (no framer-motion). */
+
+/* Odometer roll for the rolling-ticker row: expands from zero height while the
+   rows above it slide up out of the fixed, overflow-clipped window. The target
+   (3.25rem) clears a 2-line clamped row so the final state never clips; a near-
+   linear ease keeps height growth proportional to time for both 1- and 2-line
+   rows. */
+@keyframes cl-roll {
+  from {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    max-height: 3.25rem;
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.cl-roll {
+  animation: cl-roll 0.4s cubic-bezier(0.45, 0.1, 0.3, 1) both;
+}
+
+/* v0-style light sweep across the active line's text. */
+@keyframes cl-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+.cl-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    rgb(113 113 122) 0%,
+    rgb(113 113 122) 35%,
+    rgb(250 250 250) 50%,
+    rgb(113 113 122) 65%,
+    rgb(113 113 122) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: cl-shimmer 2.2s linear infinite;
+}
