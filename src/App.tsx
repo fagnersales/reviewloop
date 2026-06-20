@@ -43,6 +43,8 @@ import {
   useOpenOnly,
 } from "./review/kit"
 import { MobileView } from "./mobile/MobileView"
+import { useReadOnly } from "./read-only"
+import { SharePanel } from "./SharePanel"
 
 type AddResult = "added" | "exists" | "invalid" | "full"
 function RepoSegmented({
@@ -65,6 +67,9 @@ function RepoSegmented({
   const [adding, setAdding] = useState(false)
   const [value, setValue] = useState("")
   const [error, setError] = useState<string | null>(null)
+  // The hosted (public) console is read-only: no watch-list editing, so the
+  // add input and per-repo remove buttons are dropped entirely.
+  const readOnly = useReadOnly()
   // GitHub repo slugs are case-insensitive, so compare on lower-case throughout.
   // `repos` carries the stored (user-typed) casing; `prs[].repo` carries GitHub's
   // canonical casing. Dedup on the lower-cased key, preferring the canonical
@@ -140,12 +145,12 @@ function RepoSegmented({
                 className={cn(
                   "inline-flex items-center gap-1.5 py-1.5 pl-3 text-xs font-medium transition",
                   active ? "text-zinc-100" : "text-zinc-400 group-hover/seg:text-zinc-200",
-                  isWatched ? "pr-1.5" : "pr-3",
+                  isWatched && !readOnly ? "pr-1.5" : "pr-3",
                 )}
               >
                 {repoShort(repo)}
               </button>
-              {isWatched && (
+              {isWatched && !readOnly && (
                 <button
                   type="button"
                   title={`Remove ${repo}`}
@@ -161,7 +166,8 @@ function RepoSegmented({
         })}
       </div>
 
-      {adding ? (
+      {!readOnly &&
+        (adding ? (
         <div className="flex items-center gap-1.5">
           <input
             autoFocus
@@ -203,7 +209,7 @@ function RepoSegmented({
         >
           <Plus className="size-3.5" />
         </button>
-      )}
+        ))}
 
       {removeError && (
         <span className="text-xs text-red-300" role="alert">
@@ -1191,6 +1197,9 @@ export default function App() {
             <div className="truncate text-xs text-zinc-600">
               Claude Code and Codex review loops
             </div>
+          </div>
+          <div className="ml-auto shrink-0">
+            <SharePanel />
           </div>
         </div>
       </header>

@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as access from "../access.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as repos from "../repos.js";
@@ -20,6 +21,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  access: typeof access;
   crons: typeof crons;
   http: typeof http;
   repos: typeof repos;

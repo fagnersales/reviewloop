@@ -10,6 +10,12 @@ const app = defineApp({
     // Optional so the deployment can exist before the secret is set; the
     // /github/webhook route 503s until it is (see http.ts).
     GITHUB_WEBHOOK_SECRET: v.optional(v.string()),
+    // Passcode that gates the public (Vercel-hosted) read-only console.
+    // Optional so the deployment can exist before it's set; `access.verify`
+    // fails closed (rejects every passcode) until it is, so a misconfigured
+    // public deploy stays locked rather than wide open. The local/admin
+    // console never calls verify — it skips the gate via VITE_ACCESS_PASSCODE.
+    ACCESS_PASSCODE: v.optional(v.string()),
   },
 })
 
