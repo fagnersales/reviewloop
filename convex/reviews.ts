@@ -6,9 +6,10 @@ import { commitInfo, logKind, reviewFields, reviewStatus } from "./schema"
 
 const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed worker
 
-// Most progress lines `reviewLog` returns / a clear sweeps in one mutation. A
-// 25-min run at the worker's ~1/s throttle stays well under this; the bound just
-// keeps the read/write sizes safe if the timeout is raised or a run is chatty.
+// Upper bound on how many log lines `reviewLog` returns, and how many a single
+// `clearReviewLog` sweep deletes in one mutation. A 25-min run at the worker's
+// ~1/s throttle stays well under this; the cap just keeps the read/write sizes
+// safe if the timeout is raised or a run is unusually chatty.
 const REVIEW_LOG_MAX = 2000
 
 // Delete a review's persisted progress lines (bounded). Used when a stale
