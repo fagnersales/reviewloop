@@ -22,7 +22,7 @@ import {
 import { api } from "../convex/_generated/api"
 import { cn } from "./lib/cn"
 import { ago } from "./lib/format"
-import { CloudLogConsole } from "./components/cloud-log"
+import { CloudLogConsole, ExpandLogButton, RollingTicker } from "./components/cloud-log"
 import {
   type Commit,
   type Pass,
@@ -577,24 +577,19 @@ function EventDetail({
           label={reviewing ? "Reviewing" : "Queued"}
           spin={reviewing}
         />
-        <InfoCard
-          tone={
-            reviewing ? "border-sky-400/30 text-sky-300" : "border-zinc-700 text-zinc-400"
-          }
-          icon={reviewing ? Loader2 : Clock3}
-          title={reviewing ? "Agent is reviewing this commit" : "Queued for review"}
-          body={
-            reviewing
-              ? "The summary will appear here once the review is posted."
-              : "Waiting for an available review worker."
-          }
-          spin={reviewing}
-        />
         {/* During a re-review (a prior report already exists, so we're in the
-            two-column view) surface the same animated, full cloud-log here — not
-            just the single live line it used to show. */}
-        {reviewing && pass && (
-          <LiveReviewLog reviewId={pass._id} className="mt-3 w-full text-left" />
+            two-column view) the live cloud-log carries the status itself — its
+            header is "Agent is reviewing this commit", mirroring the first-review
+            hero's single-card language. */}
+        {reviewing && pass ? (
+          <AgentReviewingCard reviewId={pass._id} />
+        ) : (
+          <InfoCard
+            tone="border-zinc-700 text-zinc-400"
+            icon={Clock3}
+            title="Queued for review"
+            body="Waiting for an available review worker."
+          />
         )}
       </div>
     )
@@ -680,24 +675,67 @@ function EventDetail({
 // text until hovered, when they reveal their clickability.
 const META_LINK = "rounded-sm underline-offset-2 transition hover:text-zinc-200 hover:underline"
 
-// The cloud-review log for an in-flight pass. Subscribes to `reviewLog` — the
-// complete, durable history the worker appended server-side — and feeds the
-// ticker, which animates the last few lines and expands to the whole log.
-// Because the lines are persisted (not a client-side tail), opening the
-// dashboard mid-review, or remounting on PR reselect, shows every line rather
-// than only what this tab observed since mount.
-function LiveReviewLog({
-  reviewId,
-  className = "mt-1 w-full max-w-md text-left",
-}: {
-  reviewId: Pass["_id"]
-  className?: string
-}) {
+// The first-review "hero": a calm centered focal point — a spinner, the line
+// "Claude is reviewing the PR…", and the live cloud-log in a single flat,
+// width-constrained card (no nested card, no count, no subtitle). Subscribes to
+// `reviewLog` — the complete, durable history the worker appended server-side —
+// so opening the dashboard mid-review (or remounting on PR reselect) shows every
+// line, not just what this tab observed since mount. The card only appears once
+// the first line lands; until then it's just the title.
+function ReviewingHero({ reviewId }: { reviewId: Pass["_id"] }) {
   const lines = useQuery(api.reviews.reviewLog, { reviewId }) ?? []
-  if (lines.length === 0) return null
   return (
-    <div className={className}>
-      <CloudLogConsole lines={lines} streaming title="Cloud review" />
+    <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 py-12">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <Loader2 className="size-6 animate-spin text-sky-300" />
+        <p className="text-base font-medium text-zinc-100">Claude is reviewing the PR…</p>
+      </div>
+      {lines.length > 0 && (
+        <div className="relative w-full max-w-lg overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/70 p-1.5">
+          <ExpandLogButton lines={lines} streaming title="Cloud review" className="absolute right-2 top-2 z-20" />
+          {/* Height fits six rows so the oldest just fades at the top edge —
+              no dead band above the log. */}
+          <div className="h-[168px]">
+            <RollingTicker lines={lines} maxVisible={6} streaming />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The live cloud-log for a re-review round (a prior report already exists, so
+// we're in the two-column loop view). The status *is* the card header — "Agent
+// is reviewing this commit" with the log streaming below — so the re-review
+// surface mirrors the first-review hero's single-card language. Falls back to a
+// plain info card until the first line lands.
+function AgentReviewingCard({ reviewId }: { reviewId: Pass["_id"] }) {
+  const lines = useQuery(api.reviews.reviewLog, { reviewId }) ?? []
+  if (lines.length === 0) {
+    return (
+      <InfoCard
+        tone="border-sky-400/30 text-sky-300"
+        icon={Loader2}
+        title="Agent is reviewing this commit"
+        body="The summary will appear here once the review is posted."
+        spin
+      />
+    )
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/70">
+      <header className="flex items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <Loader2 className="size-4 shrink-0 animate-spin text-sky-300" />
+          <span className="truncate text-sm font-medium text-zinc-100">Agent is reviewing this commit</span>
+        </div>
+        <ExpandLogButton lines={lines} streaming title="Cloud review" />
+      </header>
+      <div className="p-1.5">
+        <div className="h-[140px]">
+          <RollingTicker lines={lines} maxVisible={5} streaming />
+        </div>
+      </div>
     </div>
   )
 }
@@ -907,19 +945,23 @@ function ReviewDetail({
       ) : (
         // No report yet (the PR's first review): one centered state spanning the
         // whole body, instead of a sparse two-column split with an empty Summary.
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 border-t border-zinc-800 px-6 py-16 text-center">
-          <span className={cn("flex size-11 items-center justify-center rounded-full border", firstReview.tone)}>
-            {firstReview.icon}
-          </span>
-          <div className="space-y-1.5">
-            <p className="text-sm font-medium text-zinc-200">{firstReview.title}</p>
-            <p className="mx-auto max-w-[42ch] text-xs leading-5 text-zinc-500">{firstReview.body}</p>
-          </div>
-          {reviewingPass && (
-            // The live cloud-review log `claude -p /pr-review` is producing right
-            // now — the last lines, animated, expandable to the whole log. Keyed
-            // per review pass so switching PRs / new commits start fresh.
-            <LiveReviewLog key={reviewingPass._id} reviewId={reviewingPass._id} />
+        <div className="flex min-h-0 flex-1 flex-col border-t border-zinc-800">
+          {reviewingPass ? (
+            // Actively reviewing: the cloud-review hero `claude -p /pr-review` is
+            // producing right now. Keyed per review pass so switching PRs / new
+            // commits start fresh.
+            <ReviewingHero key={reviewingPass._id} reviewId={reviewingPass._id} />
+          ) : (
+            // Queued / failed / no-review-yet: a simple centered status.
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+              <span className={cn("flex size-11 items-center justify-center rounded-full border", firstReview.tone)}>
+                {firstReview.icon}
+              </span>
+              <div className="space-y-1.5">
+                <p className="text-sm font-medium text-zinc-200">{firstReview.title}</p>
+                <p className="mx-auto max-w-[42ch] text-xs leading-5 text-zinc-500">{firstReview.body}</p>
+              </div>
+            </div>
           )}
         </div>
       )}
