@@ -4,7 +4,7 @@
 // — a page change, not an overlay. The detail shows the PR header and the review
 // loop; tapping a loop step raises a bottom sheet with that step's content (review
 // summary, commit list, in-flight status, …).
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Activity,
   ChevronLeft,
@@ -67,9 +67,15 @@ function DetailHeader({ pr }: { pr: Pr }) {
   )
 }
 
-function DetailScreen({ pr, onBack }: { pr: Pr; onBack: () => void }) {
+function DetailScreen({ pr, active, onBack }: { pr: Pr; active: boolean; onBack: () => void }) {
   const { events, passById, defaultEventId } = usePrLoop(pr)
   const [sheetId, setSheetId] = useState<string | null>(null)
+  // The screen stays mounted (keyed by PR key) through the back slide-out, so
+  // reset the step sheet when it goes inactive — otherwise re-opening the same PR
+  // would land on the stale raised sheet.
+  useEffect(() => {
+    if (!active) setSheetId(null)
+  }, [active])
   const selectedEvent = events.find((e) => e.id === sheetId) ?? null
   // Keep the last opened step rendered while the sheet slides out, so its body
   // doesn't blank before the close animation finishes.
@@ -245,7 +251,7 @@ export function MobileView({ prs }: { prs: Pr[] }) {
               ))}
               {visible.length === 0 && (
                 <div className="rounded-xl border border-dashed border-zinc-800 p-6 text-center text-xs text-zinc-500">
-                  No PRs match.
+                  {query.trim() ? "No PRs match your search." : openOnly ? "No open PRs." : "No reviews yet."}
                 </div>
               )}
             </div>
@@ -260,7 +266,14 @@ export function MobileView({ prs }: { prs: Pr[] }) {
           selected ? "translate-x-0" : "translate-x-full",
         )}
       >
-        {detailPr && <DetailScreen key={detailPr.key} pr={detailPr} onBack={() => setSelectedKey(null)} />}
+        {detailPr && (
+          <DetailScreen
+            key={detailPr.key}
+            pr={detailPr}
+            active={selected !== null}
+            onBack={() => setSelectedKey(null)}
+          />
+        )}
       </div>
     </div>
   )
