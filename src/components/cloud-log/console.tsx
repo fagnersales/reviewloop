@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Maximize2, X } from "lucide-react"
 import { cn } from "../../lib/cn"
 import { RollingTicker } from "./rolling-ticker"
@@ -29,8 +29,14 @@ export function CloudLogConsole({
   className?: string
 }) {
   const [open, setOpen] = useState(false)
-  // Restore focus to the trigger when the overlay closes (a11y).
+  // Restore focus to the trigger when the overlay closes (a11y). Stable via
+  // useCallback so the overlay's modal effect doesn't tear down and re-run
+  // (re-focus, re-lock scroll) on every streamed line.
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const handleClose = useCallback(() => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [])
 
   return (
     <div
@@ -66,15 +72,7 @@ export function CloudLogConsole({
       </div>
 
       {open && (
-        <CloudLogFullscreen
-          title={title}
-          lines={lines}
-          streaming={streaming}
-          onClose={() => {
-            setOpen(false)
-            triggerRef.current?.focus()
-          }}
-        />
+        <CloudLogFullscreen title={title} lines={lines} streaming={streaming} onClose={handleClose} />
       )}
     </div>
   )
@@ -114,10 +112,17 @@ function CloudLogFullscreen({
     }
   }, [onClose])
 
-  // Keep the newest line in view as the log grows.
+  // Stick to the newest line as the log grows — but only while the user is
+  // already at the bottom, so scrolling up to read history during an active
+  // review isn't yanked back down. Starts stuck, so opening jumps to newest.
+  const stickRef = useRef(true)
+  const onScroll = () => {
+    const el = scrollRef.current
+    if (el) stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
   useEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight
   }, [lines.length])
 
   return (
@@ -151,7 +156,7 @@ function CloudLogFullscreen({
             <X className="size-4" />
           </button>
         </header>
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-4">
+        <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto p-4">
           <RollingTicker lines={lines} maxVisible={Infinity} streaming={streaming} />
         </div>
       </div>
