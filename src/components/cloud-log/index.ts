@@ -7,4 +7,4 @@
 // review pass.
 export * from "./types"
 export { RollingTicker } from "./rolling-ticker"
-export { CloudLogConsole } from "./console"
+export { CloudLogConsole, ExpandLogButton } from "./console"

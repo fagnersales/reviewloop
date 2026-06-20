@@ -20,6 +20,7 @@ export function CloudLogConsole({
   maxVisible = 5,
   bodyClassName,
   className,
+  expandable = true,
 }: {
   lines: CloudLogLine[]
   title?: string
@@ -28,17 +29,9 @@ export function CloudLogConsole({
   /** Sizing for the compact body — defaults to a fixed five-row viewport. */
   bodyClassName?: string
   className?: string
+  /** Render the expand-to-fullscreen control. Default true. */
+  expandable?: boolean
 }) {
-  const [open, setOpen] = useState(false)
-  // Restore focus to the trigger when the overlay closes (a11y). Stable via
-  // useCallback so the overlay's modal effect doesn't tear down and re-run
-  // (re-focus, re-lock scroll) on every streamed line.
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const handleClose = useCallback(() => {
-    setOpen(false)
-    triggerRef.current?.focus()
-  }, [])
-
   return (
     <div
       className={cn(
@@ -55,27 +48,55 @@ export function CloudLogConsole({
           <span className="tabular-nums text-[10px] text-zinc-600">
             {streaming ? `full log · ${lines.length}` : `${lines.length} lines`}
           </span>
-          <button
-            ref={triggerRef}
-            type="button"
-            title="Expand full log"
-            aria-label="Expand full log"
-            onClick={() => setOpen(true)}
-            className="rounded p-0.5 text-zinc-500 transition hover:text-zinc-200"
-          >
-            <Maximize2 className="size-3.5" />
-          </button>
+          {expandable && <ExpandLogButton lines={lines} streaming={streaming} title={title} />}
         </div>
       </header>
 
       <div className={cn("p-3", bodyClassName ?? "h-[170px]")}>
         <RollingTicker lines={lines} maxVisible={maxVisible} streaming={streaming} />
       </div>
-
-      {open && (
-        <CloudLogFullscreen title={title} lines={lines} streaming={streaming} onClose={handleClose} />
-      )}
     </div>
+  )
+}
+
+// The expand-to-fullscreen affordance: a button plus the overlay it opens, with
+// its own focus/restore handling. Extracted so any cloud-log surface (the
+// reviewing hero, the agent-reviewing card, the console) can drop it in.
+export function ExpandLogButton({
+  lines,
+  streaming,
+  title = "Cloud review",
+  className,
+}: {
+  lines: CloudLogLine[]
+  streaming: boolean
+  title?: string
+  className?: string
+}) {
+  const [open, setOpen] = useState(false)
+  // Restore focus to the trigger when the overlay closes (a11y). Stable via
+  // useCallback so the overlay's modal effect doesn't tear down and re-run
+  // (re-focus, re-lock scroll) on every streamed line.
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const handleClose = useCallback(() => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }, [])
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        title="Expand full log"
+        aria-label="Expand full log"
+        onClick={() => setOpen(true)}
+        className={cn("rounded p-0.5 text-zinc-500 transition hover:text-zinc-200", className)}
+      >
+        <Maximize2 className="size-3.5" />
+      </button>
+      {open && <CloudLogFullscreen title={title} lines={lines} streaming={streaming} onClose={handleClose} />}
+    </>
   )
 }
 

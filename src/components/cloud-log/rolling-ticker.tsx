@@ -22,10 +22,11 @@ export function RollingTicker({ lines, maxVisible = Infinity, streaming = true }
   return (
     <div
       className={cn(
-        "rounded-lg border border-zinc-800 bg-zinc-950/80 font-mono",
-        // compact: a fixed, clipped window the rows roll within.
-        // full: natural height so the parent scroll container can scroll.
-        full ? "p-1" : "relative h-full overflow-hidden",
+        "font-mono",
+        // compact: a fixed, clipped window the rows roll within — borderless, so
+        // the surrounding card is the only frame (no card-in-a-card).
+        // full: its own bordered surface, natural height so the parent scrolls.
+        full ? "rounded-lg border border-zinc-800 bg-zinc-950/80 p-1" : "relative h-full overflow-hidden",
       )}
     >
       {/* Top fade: the oldest row dissolves into history at the top edge instead
