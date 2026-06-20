@@ -6,12 +6,13 @@ import { type CloudLogLine } from "./types"
 
 // The shell the rolling-ticker plugs into: a compact "last N" animated window
 // with a header, plus an expand-to-fullscreen overlay that scrolls the whole
-// accumulated tail in the same ticker style. This is the component intended for
-// production use.
+// log in the same ticker style. This is the component intended for production
+// use.
 //
-// Note the labels say "live" rather than "full": `lines` is the tail this client
-// has observed since mount (see useProgressHistory), not the session's complete
-// server-side log.
+// `lines` is the complete, server-persisted review log (see the `reviewLog`
+// query), so the labels say "full log" — the fullscreen overlay genuinely shows
+// the whole session, not just the tail this tab observed since mount. The
+// pulsing dot still marks an actively-streaming (in-flight) review.
 export function CloudLogConsole({
   lines,
   title = "Cloud review",
@@ -52,13 +53,13 @@ export function CloudLogConsole({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <span className="tabular-nums text-[10px] text-zinc-600">
-            {streaming ? `live · ${lines.length}` : `${lines.length} lines`}
+            {streaming ? `full log · ${lines.length}` : `${lines.length} lines`}
           </span>
           <button
             ref={triggerRef}
             type="button"
-            title="Expand live log"
-            aria-label="Expand live log"
+            title="Expand full log"
+            aria-label="Expand full log"
             onClick={() => setOpen(true)}
             className="rounded p-0.5 text-zinc-500 transition hover:text-zinc-200"
           >
@@ -133,7 +134,7 @@ function CloudLogFullscreen({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`${title} — live log`}
+        aria-label={`${title} — full log`}
         className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/50"
         onClick={(e) => e.stopPropagation()}
       >
@@ -142,14 +143,14 @@ function CloudLogFullscreen({
             <span className={cn("size-1.5 shrink-0 rounded-full", streaming ? "pulse-dot bg-sky-400" : "bg-zinc-600")} />
             <span className="truncate text-sm font-medium text-zinc-200">{title}</span>
             <span className="tabular-nums text-[11px] text-zinc-600">
-              · {streaming ? `live · ${lines.length} lines` : `${lines.length} lines`}
+              · {streaming ? `full log · ${lines.length} lines` : `${lines.length} lines`}
             </span>
           </div>
           <button
             ref={closeRef}
             type="button"
             title="Close"
-            aria-label="Close live log"
+            aria-label="Close full log"
             onClick={onClose}
             className="rounded-md border border-zinc-800 p-1 text-zinc-500 transition hover:border-zinc-700 hover:text-zinc-100"
           >

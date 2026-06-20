@@ -26,7 +26,7 @@ import {
 import { api } from "../convex/_generated/api"
 import { cn } from "./lib/cn"
 import { ago, longDur } from "./lib/format"
-import { CloudLogConsole, useProgressHistory } from "./components/cloud-log"
+import { CloudLogConsole } from "./components/cloud-log"
 
 type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
 type Pass = Pr["passes"][number]
@@ -902,13 +902,11 @@ function EventDetail({
           }
           spin={reviewing}
         />
-        {reviewing && pass?.progress && (
-          <p
-            title={pass.progress}
-            className="mt-3 truncate rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 font-mono text-[11px] text-zinc-400"
-          >
-            {pass.progress}
-          </p>
+        {/* During a re-review (a prior report already exists, so we're in the
+            two-column view) surface the same animated, full cloud-log here — not
+            just the single live line it used to show. */}
+        {reviewing && pass && (
+          <LiveReviewLog reviewId={pass._id} className="mt-3 w-full text-left" />
         )}
       </div>
     )
@@ -1032,16 +1030,23 @@ function ReviewReport({ report }: { report: string }) {
 // text until hovered, when they reveal their clickability.
 const META_LINK = "rounded-sm underline-offset-2 transition hover:text-zinc-200 hover:underline"
 
-// The live cloud-review log. The backend streams a single `progress` line per
-// `reviews` row; `useProgressHistory` accumulates the distinct values this client
-// observes into a history, which the ticker animates (last few lines, expandable
-// to the whole log). Keyed by PR + head SHA at the call site so each review pass
-// starts a fresh history.
-function LiveReviewLog({ progress }: { progress?: string }) {
-  const lines = useProgressHistory(progress)
+// The cloud-review log for an in-flight pass. Subscribes to `reviewLog` — the
+// complete, durable history the worker appended server-side — and feeds the
+// ticker, which animates the last few lines and expands to the whole log.
+// Because the lines are persisted (not a client-side tail), opening the
+// dashboard mid-review, or remounting on PR reselect, shows every line rather
+// than only what this tab observed since mount.
+function LiveReviewLog({
+  reviewId,
+  className = "mt-1 w-full max-w-md text-left",
+}: {
+  reviewId: Pass["_id"]
+  className?: string
+}) {
+  const lines = useQuery(api.reviews.reviewLog, { reviewId }) ?? []
   if (lines.length === 0) return null
   return (
-    <div className="mt-1 w-full max-w-md text-left">
+    <div className={className}>
       <CloudLogConsole lines={lines} streaming title="Cloud review" />
     </div>
   )
@@ -1118,6 +1123,9 @@ function ReviewDetail({
     )
   }
   const latestReport = [...pr.passes].reverse().find((p) => p.report)
+  // The pass `claude -p /pr-review` is running right now (if any) — the source of
+  // the live cloud-log. When the PR is reviewing, it's the newest pass.
+  const reviewingPass = [...pr.passes].reverse().find((p) => p.status === "reviewing")
   const selectedEvent =
     events.find((e) => e.id === selectedId) ??
     events.find((e) => e.id === defaultEventId) ??
@@ -1263,11 +1271,11 @@ function ReviewDetail({
             <p className="text-sm font-medium text-zinc-200">{firstReview.title}</p>
             <p className="mx-auto max-w-[42ch] text-xs leading-5 text-zinc-500">{firstReview.body}</p>
           </div>
-          {pr.status === "reviewing" && (
+          {reviewingPass && (
             // The live cloud-review log `claude -p /pr-review` is producing right
             // now — the last lines, animated, expandable to the whole log. Keyed
             // per review pass so switching PRs / new commits start fresh.
-            <LiveReviewLog key={`${pr.key}:${pr.headSha}`} progress={pr.progress} />
+            <LiveReviewLog key={reviewingPass._id} reviewId={reviewingPass._id} />
           )}
         </div>
       )}

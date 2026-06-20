@@ -13,6 +13,16 @@ export const reviewStatus = v.union(
   v.literal("failed"),
 )
 
+// Semantic kind of a streamed review-log line — mirrors the client's
+// CloudLogKind ("info" | "done" | "warn" | "error"), driving the ticker's dot
+// colour/glyph. Optional on a line; absent reads as "info".
+export const logKind = v.union(
+  v.literal("info"),
+  v.literal("done"),
+  v.literal("warn"),
+  v.literal("error"),
+)
+
 // One commit in a PR push, captured by the worker from GitHub (the dashboard has
 // no GitHub auth of its own) — the commits that landed in a single review turn.
 export const commitInfo = v.object({
@@ -68,6 +78,21 @@ export default defineSchema({
     // dedup key: one review per (repo, PR, head SHA). A prefix lookup on
     // (repo, prNumber) finds every SHA of a PR (used by closePr).
     .index("by_pr_sha", ["repo", "prNumber", "headSha"]),
+
+  // The cloud-review session's progress log, one row per appended line. Lives in
+  // its own table (not an array on the review row) so it grows without rewriting
+  // the review doc or hitting the 1MB document cap — see the schema guideline on
+  // unbounded lists. `reviews.progress` still holds the *latest* line for
+  // back-compat; this table is the complete, durable history. Ordered by the
+  // by_review index, which returns a review's lines in insertion (_creationTime)
+  // order.
+  reviewLogLines: defineTable({
+    reviewId: v.id("reviews"),
+    // worker wall-clock when the line was emitted (ms) — drives the ticker clock
+    ts: v.number(),
+    text: v.string(),
+    kind: v.optional(logKind),
+  }).index("by_review", ["reviewId"]),
 
   // Append-only debug log of every webhook GitHub delivered, so wiring problems
   // ("did the event even arrive?") are visible without reading Convex logs.
