@@ -294,33 +294,33 @@ async function selfHeal() {
   if (settled || lastRow || selfHealAttempted) return
   selfHealAttempted = true
 
-  // PR metadata for the dashboard row — all best-effort. The review itself only
-  // needs (repo, prNumber, headSha); construct a deterministic PR URL so even a
-  // failed `gh pr view` still yields a usable row.
-  let title = ""
-  let author = ""
-  let prUrl = `https://github.com/${repo}/pull/${prNumber}`
-  let prCreatedAt
   const meta = ghJson([
     "pr", "view", String(prNumber), "--repo", repo,
     "--json", "title,author,url,createdAt,state,isDraft",
   ])
-  if (meta) {
-    title = meta.title ?? title
-    author = meta.author?.login ?? author
-    prUrl = meta.url ?? prUrl
-    const createdMs = Date.parse(meta.createdAt ?? "")
-    if (!Number.isNaN(createdMs)) prCreatedAt = createdMs
-  }
 
-  // Don't self-heal a draft or closed/merged PR. Both canonical enqueue paths
-  // skip them on purpose — the webhook ignores `pr.draft` and the reconcile uses
-  // `--state open` + an `isDraft` skip — so "no row after 60s" is the *expected*
-  // state here, not a dropped delivery, and forcing an enqueue would queue a
-  // billed review the system is designed to skip. Keep waiting (a draft marked
-  // ready fires its own `ready_for_review` webhook). gh `state` is uppercase
-  // (OPEN/CLOSED/MERGED); skip the gate only when metadata couldn't be fetched.
-  if (meta && (meta.isDraft === true || (meta.state && meta.state !== "OPEN"))) {
+  // Gate the enqueue on the PR's lifecycle before doing it. A self-heal enqueue
+  // is billing-adjacent, so it must share the same invariant as the two canonical
+  // enqueue paths: only open, non-draft PRs get reviewed.
+  //
+  // Fail *closed* when PR state is unknown: if `gh pr view` failed we'd rather
+  // decline than risk queuing a review for a PR that's actually a draft/closed.
+  // A genuinely-open PR loses only the fast path — the worker's ~30-min reconcile
+  // still heals it.
+  if (!meta) {
+    process.stderr.write(
+      `prr await: couldn't fetch PR state for ${repo}#${prNumber} after 60s — ` +
+        `not self-healing; the worker's reconcile will heal it if it's open. ` +
+        `Waiting until --timeout\n`,
+    )
+    return
+  }
+  // Both canonical paths skip drafts/closed on purpose — the webhook ignores
+  // `pr.draft` and the reconcile uses `--state open` + an `isDraft` skip — so
+  // "no row after 60s" is the *expected* state here, not a dropped delivery.
+  // Keep waiting (a draft marked ready fires its own `ready_for_review` webhook).
+  // gh `state` is uppercase (OPEN/CLOSED/MERGED).
+  if (meta.isDraft === true || (meta.state && meta.state !== "OPEN")) {
     process.stderr.write(
       `prr await: no row for ${short} after 60s, but ${repo}#${prNumber} is ` +
         `${meta.isDraft ? "a draft" : String(meta.state).toLowerCase()} — ` +
@@ -328,6 +328,14 @@ async function selfHeal() {
     )
     return
   }
+
+  // PR is watched-repo-eligible (open, non-draft) — gather best-effort dashboard
+  // metadata; construct a deterministic PR URL as a fallback for any missing field.
+  const title = meta.title ?? ""
+  const author = meta.author?.login ?? ""
+  const prUrl = meta.url ?? `https://github.com/${repo}/pull/${prNumber}`
+  const createdMs = Date.parse(meta.createdAt ?? "")
+  const prCreatedAt = Number.isNaN(createdMs) ? undefined : createdMs
 
   let outcome
   try {
