@@ -36,6 +36,12 @@ fallback reconcile (~30 min) re-enqueues open PRs whose only rows for the head S
 are `failed`, so if you treat exit `3` as retriable you can just re-run `await` to
 catch the next attempt.
 
+If a push's `synchronize` webhook is dropped, no review row is ever created. After
+a ~60s grace period `await` **self-heals** — it enqueues the review itself via the
+idempotent `reviews.enqueueMissing` path, so a missed delivery recovers in ~60s
+instead of waiting up to the full ~30-min reconcile interval. You don't need to do
+anything: keep blocking on `await` as usual.
+
 Read the JSON (`reviewUrl`, `p0`/`p1`/`p2`, `confidence`) and the exit code to
 decide what to do next. **Branch on the exit code, not the JSON `status`:** on
 `--timeout` the `status` is the last-known state (e.g. `"reviewing"`), not

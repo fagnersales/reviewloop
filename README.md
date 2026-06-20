@@ -172,8 +172,14 @@ exit code (`124`) tells you it gave up. And if a PR is closed while its review i
 still `queued`, the row is removed and `await` blocks until `--timeout` (exit
 `124`) rather than exiting early.
 
-If no row appears within ~60s it warns once to stderr (worker down? webhook not
-wired for this repo?) and keeps waiting until `--timeout`.
+If no row appears within ~60s — the symptom of a dropped `synchronize` webhook
+delivery — `await` **self-heals**: it enqueues the review itself via the same
+idempotent `reviews.enqueueMissing` path the worker's reconcile uses, collapsing
+the recovery latency from up to the full fallback-reconcile interval (~30 min) to
+~60s. `doEnqueue` is idempotent, so this is safe even if a late webhook or the
+reconcile also fires (it returns `duplicate`). If the repo isn't watched, the
+self-heal enqueue reports `unwatched` and `await` says so explicitly instead of
+silently waiting out the timeout.
 
 ## Config (`worker/config.json`)
 

@@ -9,6 +9,12 @@
 // stale one. Meant to be run in the background by an automated caller (Claude
 // Code) after pushing a PR, so a review never needs a human in the relay.
 //
+// Self-heals a dropped webhook (issue #9): if no review row exists for this head
+// SHA after a ~60s grace period — the symptom of a missed `synchronize` delivery
+// — it enqueues the review itself via the same idempotent `reviews.enqueueMissing`
+// path the worker's reconcile uses, instead of blocking until the worker's ~30-min
+// fallback reconcile happens to fire (or our own timeout).
+//
 // Mirrors worker/index.mjs's Convex-subscription + config-loading conventions.
 
 import { ConvexClient } from "convex/browser"
@@ -60,6 +66,10 @@ Usage:
 Subscribes to the prr-console Convex review row for this PR's head commit and
 blocks until it is reviewed/failed, then prints the result JSON to stdout.
 
+If no row exists after ~60s (a dropped webhook delivery), it self-heals by
+enqueuing the review itself via the idempotent reviews.enqueueMissing path,
+rather than waiting on the worker's slow fallback reconcile.
+
 Arguments:
   <pr>                 PR number (required)
 
@@ -92,6 +102,17 @@ function gh(args) {
   const r = spawnSync("gh", args, { encoding: "utf8" })
   if (r.status !== 0) return undefined
   return (r.stdout || "").trim() || undefined
+}
+
+// `gh ... --json <fields>` parsed to an object (undefined on any failure).
+function ghJson(args) {
+  const r = spawnSync("gh", args, { encoding: "utf8" })
+  if (r.status !== 0) return undefined
+  try {
+    return JSON.parse(r.stdout || "")
+  } catch {
+    return undefined
+  }
 }
 
 function parseArgs(argv) {
@@ -262,15 +283,73 @@ try {
   process.exit(1)
 }
 
-// Worker-down guard: if no row appears within ~60s, warn once (to stderr) and
-// keep waiting until the real timeout.
-const missingTimer = setTimeout(() => {
-  if (!lastRow && !warnedMissing) {
-    warnedMissing = true
+// Self-heal guard: if no row appears within ~60s, the most likely cause is a
+// dropped `synchronize` webhook delivery (issue #9) — the push happened but no
+// review was ever queued. Rather than block until the worker's ~30-min fallback
+// reconcile happens to fire (or our own timeout), enqueue the review ourselves
+// via the same idempotent path the reconcile uses (`reviews.enqueueMissing`),
+// collapsing worst-case latency from ~30min to ~60s. doEnqueue is idempotent
+// (returns "duplicate"), so this is safe even if a late webhook/reconcile fires.
+async function selfHeal() {
+  if (settled || lastRow || warnedMissing) return
+  warnedMissing = true
+
+  // PR metadata for the dashboard row — all best-effort. The review itself only
+  // needs (repo, prNumber, headSha); construct a deterministic PR URL so even a
+  // failed `gh pr view` still yields a usable row.
+  let title = ""
+  let author = ""
+  let prUrl = `https://github.com/${repo}/pull/${prNumber}`
+  let prCreatedAt
+  const meta = ghJson([
+    "pr", "view", String(prNumber), "--repo", repo,
+    "--json", "title,author,url,createdAt",
+  ])
+  if (meta) {
+    title = meta.title ?? title
+    author = meta.author?.login ?? author
+    prUrl = meta.url ?? prUrl
+    const createdMs = Date.parse(meta.createdAt ?? "")
+    if (!Number.isNaN(createdMs)) prCreatedAt = createdMs
+  }
+
+  let outcome
+  try {
+    outcome = await client.mutation(api.reviews.enqueueMissing, {
+      repo,
+      prNumber,
+      headSha,
+      title,
+      author,
+      prUrl,
+      prCreatedAt,
+    })
+  } catch (e) {
     process.stderr.write(
-      `prr await: no queued/reviewing row for ${short} after 60s — is the worker running and the webhook configured for ${repo}?\n`,
+      `prr await: no row for ${short} after 60s and self-heal enqueue failed: ${String(e)} — ` +
+        `is the worker running and ${repo} watched? still waiting until --timeout\n`,
+    )
+    return
+  }
+
+  if (settled) return
+  if (outcome === "enqueued") {
+    log(
+      `self-healed: no row for ${short} after 60s (dropped webhook?) — enqueued the review myself; waiting`,
+    )
+  } else if (outcome === "duplicate") {
+    log(
+      `self-heal: a review row for ${short} already exists — a late webhook/reconcile beat me; waiting`,
+    )
+  } else if (outcome === "unwatched") {
+    process.stderr.write(
+      `prr await: ${repo} is not watched by prr-console — no review will be queued. ` +
+        `Add it in the dashboard / worker/config.json. Still waiting until --timeout\n`,
     )
   }
+}
+const missingTimer = setTimeout(() => {
+  void selfHeal()
 }, 60_000)
 
 // Hard timeout: dump last-known state and exit 124.
