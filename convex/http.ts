@@ -10,6 +10,14 @@ const json = (body: unknown, status = 200) =>
     headers: { "Content-Type": "application/json" },
   })
 
+// GitHub timestamps are ISO-8601 strings ("2026-06-20T12:00:00Z"). Parse to ms,
+// or undefined when absent/unparseable so we never store a NaN.
+function isoMs(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined
+  const ms = Date.parse(value)
+  return Number.isNaN(ms) ? undefined : ms
+}
+
 // HMAC-SHA256 hex of `payload` keyed by `secret`. GitHub signs the raw request
 // body and sends it as `X-Hub-Signature-256: sha256=<hex>`.
 async function hmacSha256Hex(secret: string, payload: string): Promise<string> {
@@ -93,7 +101,12 @@ http.route({
 
     if (action === "closed") {
       const state = pr.merged === true ? "merged" : "closed"
-      await ctx.runMutation(internal.reviews.setPrState, { repo, prNumber, state })
+      await ctx.runMutation(internal.reviews.setPrState, {
+        repo,
+        prNumber,
+        state,
+        at: isoMs(pr.merged_at) ?? isoMs(pr.closed_at),
+      })
       await ctx.runMutation(internal.reviews.recordDelivery, {
         deliveryId,
         event,
@@ -132,6 +145,7 @@ http.route({
       title: pr.title ?? "",
       author: pr.user?.login ?? "",
       prUrl: pr.html_url ?? "",
+      prCreatedAt: isoMs(pr.created_at),
     })
     await ctx.runMutation(internal.reviews.recordDelivery, {
       deliveryId,

@@ -25,7 +25,7 @@ import {
 } from "lucide-react"
 import { api } from "../convex/_generated/api"
 import { cn } from "./lib/cn"
-import { ago } from "./lib/format"
+import { ago, longDur } from "./lib/format"
 
 type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
 type AddResult = "added" | "exists" | "invalid"
@@ -56,6 +56,18 @@ function useIsNarrowViewport() {
   return isNarrow
 }
 
+// A clock that re-renders on an interval, so "open for…" durations keep growing
+// without a backend event to nudge the subscription. Default 1s — coarse enough
+// that the per-minute display barely moves, cheap enough not to matter.
+function useNow(periodMs = 1000) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), periodMs)
+    return () => clearInterval(id)
+  }, [periodMs])
+  return now
+}
+
 // The "open only" PR-list filter is a view preference, not server state, so it
 // lives in localStorage and survives reloads.
 const OPEN_ONLY_KEY = "prr.pr-list.open-only"
@@ -81,6 +93,26 @@ function repoShort(repo: string) {
 // SHAs (the actual commits reviewed) rather than raw passes.
 function roundCount(pr: Pr) {
   return new Set(pr.passes.map((p) => p.headSha)).size
+}
+
+// How long the PR has been alive: total time-to-merge once it's merged/closed,
+// else elapsed time since it opened (which keeps ticking via `now`). Anchored on
+// GitHub's real created/closed timestamps, falling back to review-queue times for
+// PRs that predate timestamp capture. `span` is the bare duration for the compact
+// list chip; `header` is the spelled-out phrase; `title` is the tooltip.
+function prTiming(
+  pr: Pr,
+  now: number,
+): { span: string; header: string; title: string } | null {
+  const start = pr.prCreatedAt ?? pr.passes[0]?.queuedAt
+  if (start == null) return null
+  if (pr.prState) {
+    const span = longDur((pr.closedAt ?? pr.updatedAt) - start)
+    const verb = pr.prState === "merged" ? "Merged" : "Closed"
+    return { span, header: `${verb} in ${span}`, title: `${verb} ${span} after opening` }
+  }
+  const span = longDur(now - start)
+  return { span, header: `Open for ${span}`, title: `Open for ${span}` }
 }
 
 function findingsLine(x: { p0?: number; p1?: number; p2?: number }) {
@@ -158,7 +190,7 @@ function buildEvents(pr: Pr): TimelineEvent[] {
       kind: "opened",
       title: "PR opened",
       body: `Opened by ${pr.author}.`,
-      time: first.queuedAt,
+      time: pr.prCreatedAt ?? first.queuedAt,
     })
   }
 
@@ -211,22 +243,27 @@ function buildEvents(pr: Pr): TimelineEvent[] {
     }
   }
 
-  if (pr.prState === "merged") {
-    events.push({
-      id: `${pr.key}-merged`,
-      kind: "merged",
-      title: "Merged",
-      body: "PR merged on GitHub — no further review needed.",
-      time: pr.updatedAt,
-    })
-  } else if (pr.prState === "closed") {
-    events.push({
-      id: `${pr.key}-closed`,
-      kind: "closed",
-      title: "Closed",
-      body: "PR closed without merging.",
-      time: pr.updatedAt,
-    })
+  if (pr.prState) {
+    const start = pr.prCreatedAt ?? first?.queuedAt
+    const end = pr.closedAt ?? pr.updatedAt
+    const took = start != null ? ` ${longDur(end - start)} after opening` : ""
+    if (pr.prState === "merged") {
+      events.push({
+        id: `${pr.key}-merged`,
+        kind: "merged",
+        title: "Merged",
+        body: `PR merged on GitHub${took} — no further review needed.`,
+        time: end,
+      })
+    } else {
+      events.push({
+        id: `${pr.key}-closed`,
+        kind: "closed",
+        title: "Closed",
+        body: `PR closed without merging${took}.`,
+        time: end,
+      })
+    }
   }
 
   return events
@@ -296,19 +333,6 @@ function ScoreBadge({ score }: { score?: number }) {
       )}
     >
       {score != null ? `${score}/5` : "new"}
-    </span>
-  )
-}
-
-// How many review rounds a PR has been through, shown as a peer of ScoreBadge.
-function RoundsBadge({ count }: { count: number }) {
-  return (
-    <span
-      title={`${count} review ${count === 1 ? "round" : "rounds"}`}
-      className="inline-flex items-center gap-1 rounded-md border border-zinc-700/80 bg-zinc-900 px-1.5 py-0.5 text-[11px] font-medium text-zinc-400"
-    >
-      <RotateCw className="size-3" />
-      {count}
     </span>
   )
 }
@@ -491,40 +515,57 @@ function PrList({
   emptyLabel: string
   showRepo: boolean
 }) {
+  const now = useNow()
   return (
     <div className="space-y-1.5">
-      {prs.map((pr) => (
-        <button
-          key={pr.key}
-          type="button"
-          onClick={() => onSelect(pr.key)}
-          className={cn(
-            "w-full rounded-md border px-2.5 py-2 text-left transition",
-            selectedKey === pr.key
-              ? "border-zinc-700 bg-zinc-900 text-zinc-100"
-              : "border-transparent text-zinc-400 hover:border-zinc-700 hover:bg-zinc-900/60 hover:text-zinc-200",
-          )}
-        >
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex min-w-0 items-baseline gap-1.5 text-sm font-medium">
-              {showRepo && (
-                <span className="truncate text-zinc-500">{repoShort(pr.repo)}</span>
-              )}
-              <span className="shrink-0">#{pr.prNumber}</span>
-            </span>
-            <span className="flex shrink-0 items-center gap-1.5">
-              <RoundsBadge count={roundCount(pr)} />
+      {prs.map((pr) => {
+        const timing = prTiming(pr, now)
+        const rounds = roundCount(pr)
+        return (
+          <button
+            key={pr.key}
+            type="button"
+            onClick={() => onSelect(pr.key)}
+            className={cn(
+              "w-full rounded-md border px-2.5 py-2 text-left transition",
+              selectedKey === pr.key
+                ? "border-zinc-700 bg-zinc-900 text-zinc-100"
+                : "border-transparent text-zinc-400 hover:border-zinc-700 hover:bg-zinc-900/60 hover:text-zinc-200",
+            )}
+          >
+            {/* Title leads; the review score (the point of the console) is the
+                one badge that earns the top line. */}
+            <div className="flex items-center justify-between gap-2">
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{pr.title}</span>
               <ScoreBadge score={pr.confidence} />
-            </span>
-          </div>
-          <div className="mt-1.5 flex items-center justify-between gap-2">
-            <span className="min-w-0 flex-1 truncate text-xs">{pr.title}</span>
-            <span className="shrink-0">
+            </div>
+            {/* Everything secondary collapses into one muted line: repo · #num ·
+                timing · rounds on the left, lifecycle status on the right. */}
+            <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-zinc-500">
+              <span className="flex min-w-0 items-center gap-2">
+                {showRepo && <span className="truncate">{repoShort(pr.repo)}</span>}
+                <span className="shrink-0 font-mono">#{pr.prNumber}</span>
+                {timing && (
+                  <span className="inline-flex shrink-0 items-center gap-1" title={timing.title}>
+                    <Clock3 className="size-3" />
+                    {timing.span}
+                  </span>
+                )}
+                {rounds > 1 && (
+                  <span
+                    className="inline-flex shrink-0 items-center gap-1"
+                    title={`${rounds} review rounds`}
+                  >
+                    <RotateCw className="size-3" />
+                    {rounds}
+                  </span>
+                )}
+              </span>
               <StatusBadge pr={pr} />
-            </span>
-          </div>
-        </button>
-      ))}
+            </div>
+          </button>
+        )
+      })}
       {prs.length === 0 && (
         <div className="rounded-md border border-dashed border-zinc-800 p-4 text-center text-xs text-zinc-500">
           {emptyLabel}
@@ -535,7 +576,7 @@ function PrList({
 }
 
 function Timeline({ events }: { events: TimelineEvent[] }) {
-  const now = Date.now()
+  const now = useNow()
   return (
     <div className="relative space-y-4">
       <div className="absolute bottom-4 left-3.5 top-4 w-px bg-zinc-800" />
@@ -617,6 +658,21 @@ function ReviewReport({ report }: { report: string }) {
 // Muted-by-default metadata links in the PR header: they read as plain caption
 // text until hovered, when they reveal their clickability.
 const META_LINK = "rounded-sm underline-offset-2 transition hover:text-zinc-200 hover:underline"
+
+// The PR-header timing item. Owns its own ticker so only this leaf re-renders
+// each second — keeping the per-second clock off ReviewDetail, whose Markdown
+// report would otherwise re-parse on every tick.
+function MetaTiming({ pr }: { pr: Pr }) {
+  const now = useNow()
+  const timing = prTiming(pr, now)
+  if (!timing) return null
+  return (
+    <span className="flex items-center gap-1" title={timing.title}>
+      <Clock3 className="size-3" />
+      {timing.header}
+    </span>
+  )
+}
 
 function ReviewDetail({
   pr,
@@ -727,6 +783,7 @@ function ReviewDetail({
                 <GitCommit className="size-3" />
                 {pr.headSha.slice(0, 7)}
               </a>
+              <MetaTiming pr={pr} />
             </div>
           </div>
           <a

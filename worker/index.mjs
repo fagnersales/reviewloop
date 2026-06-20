@@ -499,7 +499,7 @@ async function reconcile(reason) {
       "--state",
       "open",
       "--json",
-      "number,headRefOid,title,author,url,isDraft",
+      "number,headRefOid,title,author,url,isDraft,createdAt",
     ])
     if (code !== 0) {
       log(`reconcile ${repo} failed:`, err.trim())
@@ -515,6 +515,7 @@ async function reconcile(reason) {
     for (const pr of prs) {
       if (pr.isDraft) continue
       try {
+        const createdMs = Date.parse(pr.createdAt ?? "")
         const r = await client.mutation(api.reviews.enqueueMissing, {
           repo,
           prNumber: pr.number,
@@ -522,6 +523,7 @@ async function reconcile(reason) {
           title: pr.title ?? "",
           author: pr.author?.login ?? "",
           prUrl: pr.url ?? "",
+          prCreatedAt: Number.isNaN(createdMs) ? undefined : createdMs,
         })
         if (r === "enqueued") enqueued++
       } catch (e) {

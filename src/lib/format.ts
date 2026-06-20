@@ -25,3 +25,21 @@ export function clock(ms: number): string {
   const m = Math.floor(s / 60)
   return `${m}:${(s % 60).toString().padStart(2, "0")}`
 }
+
+// Coarse span for PR lifetimes that range from seconds to days, where `dur`'s
+// "1440m 00s" for a day would be useless: "45s" / "12m" / "2h 15m" / "3d 4h".
+// Shows the top two units, dropping a trailing zero unit ("2h", not "2h 0m").
+export function longDur(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) {
+    const rem = m % 60
+    return rem ? `${h}h ${rem}m` : `${h}h`
+  }
+  const d = Math.floor(h / 24)
+  const rem = h % 24
+  return rem ? `${d}d ${rem}h` : `${d}d`
+}
