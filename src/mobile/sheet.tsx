@@ -134,7 +134,13 @@ export function DraggableSheet({
 
     if (target !== snapIndex) onSnapChange?.(target)
     setSnapIndex(target)
-    setPct(restPct(target))
+    // The live drag set style.transform imperatively, so React's committed `pct`
+    // is stale. Snapping straight to `restPct(target)` can be a no-op setState
+    // (e.g. a single snap where the rest pct already equals `pct`) — React then
+    // skips re-writing transform and the sheet sticks where the finger lifted.
+    // Adopt the drag position into state first, then animate to the snap next frame.
+    setPct(currentPct)
+    requestAnimationFrame(() => setPct(restPct(target)))
   }
 
   if (!render) return null
