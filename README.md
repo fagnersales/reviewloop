@@ -2,10 +2,13 @@
 
 Event-driven PR review. A GitHub webhook pushes `pull_request` events into a
 standalone Convex deployment; a local worker subscribes over the Convex sync
-websocket and fires `claude -p '/pr-review N'` the moment a PR opens or is pushed
-to — no polling. A small dashboard shows the live state: what's queued, what's
-**being verified** (with an elapsed timer, since a review takes ~10 min), and
-what's been **verified** (with the GitHub review link + confidence score).
+websocket and reviews each PR the moment it opens or is pushed to — no polling.
+For each review the worker clones the repo into a throwaway temp dir and runs
+`claude -p` with the review instructions passed **inline**, so a watched repo
+needs no local checkout and no `/pr-review` skill installed in it. A small
+dashboard shows the live state: what's queued, what's **being verified** (with an
+elapsed timer, since a review takes ~10 min), and what's been **verified** (with
+the GitHub review link + confidence score).
 
 This replaced the retired `prr` poll loop (the old `~/.local/bin/prr` +
 `~/.pr-review-loop` gh-polling daemon, now removed).
@@ -20,7 +23,7 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
                 ▼                                  ▼                │
         worker/index.mjs                    Dashboard (Vite+React)  │
         subscribe→claim→`claude -p`──────────────────────────────┘
-        in the target repo's cwd           live board + timers
+        in a throwaway repo clone          live board + timers
 ```
 
 ## Layout
@@ -28,8 +31,9 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
 - `convex/` — backend. `schema.ts`, `http.ts` (`/github/webhook`, `/health`),
   `reviews.ts` (enqueue/claim/finish/board/…), `controls.ts` (rescan), `crons.ts`
   (requeue crashed runs).
-- `worker/index.mjs` — the long-lived subscriber that runs reviews. Config in
-  `worker/config.json` (repos→workdirs, model, concurrency).
+- `worker/index.mjs` — the long-lived subscriber that runs reviews. The watch
+  list lives in Convex (managed from the dashboard); `worker/config.json` holds
+  only host settings (model, concurrency, clone dir).
 - `src/` — the dashboard.
 
 ## One-time setup
@@ -173,13 +177,37 @@ wired for this repo?) and keeps waiting until `--timeout`.
 
 ## Config (`worker/config.json`)
 
+The **watch list is not here** — repos are managed from the dashboard and stored
+in Convex (`watchedRepos`); the worker subscribes to it. `worker/config.json`
+holds only host/runtime settings:
+
 | key | meaning |
 | --- | --- |
 | `convexUrl` | deployment URL; empty = read `VITE_CONVEX_URL` from `.env.local` |
-| `repos[]` | `{ repo: "owner/name", workdir: "/abs/path" }` — where to run `claude -p` |
 | `model` | model for `claude -p` (default `opus`) |
 | `concurrency` | max simultaneous reviews (default 3) |
 | `reviewTimeoutMin` | kill a run after this many minutes (default 25) |
 | `fallbackReconcileMin` | slow `gh`-based safety reconcile; `0` to disable (default 30) |
+| `cloneDir` | where per-review throwaway clones go; empty = OS temp dir |
 
-Override any field in `worker/config.local.json` (gitignored).
+Override any field in `worker/config.local.json` (gitignored), or via env
+(`PRR_CONVEX_URL`, `CLAUDE_BIN`, `PRR_CLONE_DIR`).
+
+### Managing watched repos
+
+Add/remove repos from the dashboard (the `+` / hover-`×` controls on the repo
+filter). The watch list is **authoritative** — both the webhook enqueue and the
+worker reconcile gate on it (`doEnqueue` in `convex/reviews.ts`):
+
+- **Add:** the repo is reconciled **immediately** — its open, non-draft PRs are
+  queued at once, without waiting for the fallback timer. New pushes are reviewed
+  via the GitHub webhook (one-time setup, step 3); the reconcile is the safety net
+  that also catches repos added before their webhook, or events missed while the
+  worker was down.
+- **Remove:** new reviews **stop** — an unwatched repo's webhook deliveries are
+  ignored (logged as `unwatched`) and the reconcile skips it. Reviews already
+  queued or running still finish. The GitHub webhook can stay configured, so
+  add/remove here never requires touching GitHub.
+
+A repo only gets auto-cloned and reviewed (under `claude --permission-mode
+bypassPermissions`) while it's on this list, so keep it to repos you trust.

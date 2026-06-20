@@ -36,7 +36,18 @@ async function doEnqueue(
     author: string
     prUrl: string
   },
-): Promise<"enqueued" | "duplicate"> {
+): Promise<"enqueued" | "duplicate" | "unwatched"> {
+  // The watch list is authoritative for *what gets reviewed*, not just for the
+  // reconcile rescan. Both entry points — the webhook (`enqueue`) and the worker's
+  // reconcile (`enqueueMissing`) — funnel through here, so gating on `watchedRepos`
+  // means a repo removed from the dashboard stops getting new reviews, and a repo
+  // never added can't trigger an (unsandboxed) auto-clone-and-review at all. Repo
+  // slugs are case-insensitive, matched the same way as convex/repos.ts. The set is
+  // config-scale, so a single `.collect()` is bounded and acceptable.
+  const target = a.repo.toLowerCase()
+  const watched = await ctx.db.query("watchedRepos").collect()
+  if (!watched.some((r) => r.repo.toLowerCase() === target)) return "unwatched"
+
   const existing = await ctx.db
     .query("reviews")
     .withIndex("by_pr_sha", (q) =>
@@ -56,14 +67,22 @@ async function doEnqueue(
 // Called by the webhook (server-side only).
 export const enqueue = internalMutation({
   args: enqueueArgs,
-  returns: v.union(v.literal("enqueued"), v.literal("duplicate")),
+  returns: v.union(
+    v.literal("enqueued"),
+    v.literal("duplicate"),
+    v.literal("unwatched"),
+  ),
   handler: (ctx, args) => doEnqueue(ctx, args),
 })
 
 // Called by the worker's "re-scan open PRs" reconcile (needs a public surface).
 export const enqueueMissing = mutation({
   args: enqueueArgs,
-  returns: v.union(v.literal("enqueued"), v.literal("duplicate")),
+  returns: v.union(
+    v.literal("enqueued"),
+    v.literal("duplicate"),
+    v.literal("unwatched"),
+  ),
   handler: (ctx, args) => doEnqueue(ctx, args),
 })
 

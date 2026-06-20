@@ -7,8 +7,8 @@ import type { QueryCtx } from "./_generated/server"
 // and display the repo with its original casing (the dashboard filter compares it
 // against `reviews.repo`, which carries GitHub's canonical casing).
 //
-// `watchedRepos` is config-scale (a handful of rows owned by the dashboard/worker),
-// so a full `.collect()` here is bounded and acceptable — and it keeps the dedup
+// `watchedRepos` is config-scale (a handful of rows owned by the dashboard), so a
+// full `.collect()` here is bounded and acceptable — and it keeps the dedup
 // back-compatible with existing rows (no new stored field needed).
 async function getRepoRow(ctx: QueryCtx, repo: string) {
   const target = repo.toLowerCase()
@@ -16,30 +16,10 @@ async function getRepoRow(ctx: QueryCtx, repo: string) {
   return rows.find((r) => r.repo.toLowerCase() === target) ?? null
 }
 
-// Worker publishes the repos it's configured to review (from worker/config.json)
-// on startup. Additive: it ensures each configured repo is present without
-// deleting others, so repos added from the dashboard survive a worker restart.
-// The watch list is owned by the dashboard; the worker only guarantees its own
-// repos are listed.
-export const setWatched = mutation({
-  args: { repos: v.array(v.string()) },
-  returns: v.null(),
-  handler: async (ctx, { repos }) => {
-    // Read the watch set once (config-scale: bounded by the dashboard/worker
-    // config, so a single `.collect()` is acceptable) and check membership
-    // case-insensitively in memory, avoiding an O(n²) collect-per-repo loop.
-    const rows = await ctx.db.query("watchedRepos").collect()
-    const watched = new Set(rows.map((r) => r.repo.toLowerCase()))
-    for (const repo of repos) {
-      const key = repo.toLowerCase()
-      if (!watched.has(key)) {
-        await ctx.db.insert("watchedRepos", { repo, updatedAt: Date.now() })
-        watched.add(key)
-      }
-    }
-    return null
-  },
-})
+// The watch list is owned entirely by the dashboard (add/remove below) and read
+// live by the worker via `list`. There's no worker→Convex publish step: a repo is
+// watched because it's a row in this table, full stop — adding one here is all it
+// takes for the worker to start reconciling and reviewing its PRs.
 
 // Dashboard adds a repo to the watch list. Expects "owner/name".
 export const add = mutation({
@@ -54,8 +34,11 @@ export const add = mutation({
   },
 })
 
-// Dashboard removes a repo from the watch list. (The worker re-adds it on its
-// next publish if the repo is still in its config.)
+// Dashboard removes a repo from the watch list. Removal is authoritative: new
+// reviews stop (both the webhook and the reconcile enqueue gate on this table —
+// see doEnqueue in reviews.ts). Reviews already queued/running for it still
+// finish; the GitHub webhook can stay configured (its deliveries just log as
+// "unwatched"), so add/remove here doesn't require touching GitHub.
 export const remove = mutation({
   args: { repo: v.string() },
   returns: v.null(),

@@ -3,18 +3,38 @@
 //
 // Subscribes to the prr-console Convex deployment over its sync websocket and
 // reacts to changes instead of polling GitHub:
-//   - reviews.claimable  -> claim a queued review, then run `claude -p /pr-review N`
-//                           in the target repo, and report the result back.
+//   - reviews.claimable  -> claim a queued review, then run `claude -p "<review
+//                           instructions>"` against a fresh clone of the target
+//                           repo, and report the result back.
+//   - repos.list         -> the live watch list (owned by the dashboard). Drives
+//                           the `gh` reconcile; a change re-reconciles at once.
 // A long fallback timer reconciles open PRs via `gh` too, so a webhook missed
 // while we were down still gets caught. This replaces the old watch.sh poll loop.
+//
+// Two things this worker deliberately does NOT need anymore:
+//   1. A per-repo `workdir`. Each review clones the repo into a throwaway temp
+//      dir (blobless partial clone, so history for git log/blame still works) and
+//      deletes it when done — so a repo only has to be on the watch list, never
+//      checked out on this host.
+//   2. The `pr-review` skill installed in the target repo. The review
+//      instructions live in this console (.claude/skills/pr-review/SKILL.md) and
+//      are passed inline as the prompt, so any watched repo is reviewable as-is.
 
 import { ConvexClient } from "convex/browser"
 import { api } from "../convex/_generated/api.js"
 import { spawn } from "node:child_process"
-import { readFileSync, mkdirSync, appendFileSync } from "node:fs"
+import {
+  readFileSync,
+  mkdirSync,
+  mkdtempSync,
+  appendFileSync,
+  rmSync,
+  readdirSync,
+  statSync,
+} from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
-import { hostname } from "node:os"
+import { hostname, tmpdir } from "node:os"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -56,9 +76,38 @@ if (!CONVEX_URL) {
   process.exit(1)
 }
 
-const repoMap = new Map(cfg.repos.map((r) => [r.repo, r.workdir]))
 const ts = () => new Date().toISOString().slice(11, 19)
 const log = (...a) => console.log(`[${ts()}]`, ...a)
+
+// Where the inline review instructions come from: this console's own pr-review
+// skill body (frontmatter stripped). One source of truth — the target repo no
+// longer needs the skill installed for the worker to review it.
+const SKILL_FILE = join(__dirname, "..", ".claude", "skills", "pr-review", "SKILL.md")
+
+// Throwaway clones live here, one per review, each dir named `prr-review-*`.
+const CLONE_PREFIX = "prr-review-"
+const CLONE_BASE = process.env.PRR_CLONE_DIR || cfg.cloneDir || tmpdir()
+mkdirSync(CLONE_BASE, { recursive: true })
+
+// The review instructions, loaded once: the pr-review skill body, minus two
+// interactive bits that don't apply to an automated, no-human run —
+//   - the YAML frontmatter, and
+//   - the "## Inputs" section, which resolves *which* PR to review (and may "ask
+//     the user which one"). The PR is supplied explicitly by reviewPrompt's
+//     "This run" appendix, so leaving Inputs in only creates an instruction
+//     conflict. (SKILL.md keeps it for interactive /pr-review use.)
+// A loud failure here beats every review silently failing.
+let REVIEW_SKILL
+try {
+  REVIEW_SKILL = readFileSync(SKILL_FILE, "utf8")
+    .replace(/^---\n[\s\S]*?\n---\n/, "")
+    .replace(/\n## Inputs\n[\s\S]*?(?=\n## )/, "\n")
+    .trim()
+  if (!REVIEW_SKILL) throw new Error("empty after stripping frontmatter")
+} catch (e) {
+  console.error(`[prr-worker] cannot read review instructions at ${SKILL_FILE}: ${e}`)
+  process.exit(1)
+}
 
 const client = new ConvexClient(CONVEX_URL)
 
@@ -67,12 +116,14 @@ const inflight = new Set()
 const claiming = new Set()
 let latestClaimable = []
 
+// The dashboard-owned watch list, kept live via repos.list (see subscriptions).
+// Drives the `gh` reconcile; the queue itself decides what actually gets reviewed.
+let watchedRepos = []
+
 log(`worker "${WORKER}" up; convex=${CONVEX_URL} concurrency=${cfg.concurrency}`)
 
-// publish the watched repos so the dashboard lists them before any review exists
-client
-  .mutation(api.repos.setWatched, { repos: cfg.repos.map((r) => r.repo) })
-  .catch((e) => log("setWatched failed:", String(e)))
+// A crash can leave a clone behind; clear strays before we start making more.
+sweepStaleClones()
 
 // ── run a shell command, capture output ──────────────────────────────────────
 function run(cmd, args, opts = {}) {
@@ -85,6 +136,82 @@ function run(cmd, args, opts = {}) {
     child.on("error", (e) => resolve({ code: -1, out, err: String(e) }))
     child.on("close", (code) => resolve({ code, out, err }))
   })
+}
+
+// ── repo clone + review prompt ───────────────────────────────────────────────
+// Blobless partial clone into `dir`: fast, but keeps full commit history so the
+// skill's `git log`/`git blame`/`git show origin/<head>:path` all work (blobs are
+// fetched lazily as needed). `gh repo clone` carries the user's gh auth, so
+// private repos clone too. Returns { ok, error }.
+async function cloneRepo(repo, dir) {
+  const { code, err } = await run("gh", [
+    "repo",
+    "clone",
+    repo,
+    dir,
+    "--",
+    "--filter=blob:none",
+    "--no-tags",
+  ])
+  if (code === 0) return { ok: true }
+  const reason = (err || "").trim().split("\n").pop() || `gh repo clone exited ${code}`
+  return { ok: false, error: reason }
+}
+
+// The inline review brief: the skill body, plus the specifics of this PR so the
+// agent never depends on a skill argument or the local working tree.
+function reviewPrompt(row) {
+  const prUrl = row.prUrl || `https://github.com/${row.repo}/pull/${row.prNumber}`
+  return `${REVIEW_SKILL}
+
+---
+
+## This run
+
+You are running as an automated reviewer inside a fresh, throwaway clone of
+**${row.repo}**, checked out at its default branch. There is no human in the loop
+and no \`/pr-review\` skill installed — the instructions above are the whole brief.
+
+- Repo: \`${row.repo}\`
+- PR to review: **#${row.prNumber}** — ${row.title || "(no title)"}
+- PR URL: ${prUrl}
+- Head commit under review: \`${row.headSha}\`
+
+The local checkout is the default branch, **not** the PR branch, so read the PR's
+actual contents from \`origin\` with \`gh\`/\`git\` as the instructions describe. When a
+\`gh\` command needs the repo, it is \`${row.repo}\` (pass \`--repo ${row.repo}\`). Post
+exactly one \`COMMENT\` review to GitHub, then close your message with the review
+URL, the confidence score, the review-effort score, and the P0/P1/P2 counts.`
+}
+
+// Remove `prr-review-*` clone dirs left in CLONE_BASE by a prior crash. Bounded
+// by age so a concurrent worker's *live* clone (always younger than the review
+// timeout) is never swept — multiple workers may share CLONE_BASE.
+function sweepStaleClones() {
+  let entries
+  try {
+    entries = readdirSync(CLONE_BASE, { withFileTypes: true })
+  } catch {
+    return
+  }
+  // Guard the default: a missing/NaN reviewTimeoutMin would make `staleMs` NaN,
+  // the age check always false-y, and could sweep a concurrent worker's live clone.
+  const timeoutMin = Number.isFinite(cfg.reviewTimeoutMin) ? cfg.reviewTimeoutMin : 25
+  const staleMs = (timeoutMin + 30) * 60 * 1000
+  const now = Date.now()
+  let swept = 0
+  for (const e of entries) {
+    if (!e.isDirectory() || !e.name.startsWith(CLONE_PREFIX)) continue
+    const p = join(CLONE_BASE, e.name)
+    try {
+      if (now - statSync(p).mtimeMs < staleMs) continue
+      rmSync(p, { recursive: true, force: true })
+      swept++
+    } catch {
+      /* best effort */
+    }
+  }
+  if (swept) log(`swept ${swept} stale clone dir(s) from ${CLONE_BASE}`)
 }
 
 // ── claim + run loop ─────────────────────────────────────────────────────────
@@ -119,22 +246,39 @@ async function claimAndRun(row) {
   })
 }
 
+// Clone the PR's repo into a throwaway dir, review it there, then delete the dir.
+// The clone — not a configured workdir — is the only code-on-disk a review needs.
 async function runReview(row) {
-  const workdir = repoMap.get(row.repo)
   const short = row.headSha.slice(0, 7)
-  if (!workdir) {
-    log(`no workdir configured for ${row.repo} — failing #${row.prNumber}`)
-    await finish(row, false, { error: `no workdir configured for ${row.repo}` })
-    return
+  const cloneDir = mkdtempSync(join(CLONE_BASE, CLONE_PREFIX))
+  try {
+    log(`⬇ cloning ${row.repo} for #${row.prNumber} @${short} -> ${cloneDir}`)
+    const cloned = await cloneRepo(row.repo, cloneDir)
+    if (!cloned.ok) {
+      log(`✗ clone failed ${row.repo}#${row.prNumber}: ${cloned.error}`)
+      await finish(row, false, { error: `clone failed: ${cloned.error}` })
+      return
+    }
+    await reviewClone(row, short, cloneDir)
+  } finally {
+    try {
+      rmSync(cloneDir, { recursive: true, force: true })
+    } catch {
+      /* best effort */
+    }
   }
+}
+
+async function reviewClone(row, short, cloneDir) {
   const logFile = join(LOG_DIR, `pr-${row.prNumber}-${short}.log`)
   log(`▶ reviewing ${row.repo}#${row.prNumber} @${short} -> ${logFile}`)
 
   // stream-json (+ --verbose, required) gives us the agent's step-by-step events
-  // so we can surface a live "what it's doing" line to the dashboard.
+  // so we can surface a live "what it's doing" line to the dashboard. The review
+  // brief is passed inline (no /pr-review skill needed in the target repo).
   const args = [
     "-p",
-    `/pr-review ${row.prNumber}`,
+    reviewPrompt(row),
     "--permission-mode",
     "bypassPermissions",
     "--model",
@@ -143,7 +287,7 @@ async function runReview(row) {
     "stream-json",
     "--verbose",
   ]
-  const child = spawn(CLAUDE_BIN, args, { cwd: workdir, env: process.env })
+  const child = spawn(CLAUDE_BIN, args, { cwd: cloneDir, env: process.env })
 
   let finalText = "" // the agent's closing summary (from the result event)
   let lastFullText = "" // fallback report source if no result event
@@ -339,8 +483,14 @@ function parseReport(text) {
 }
 
 // ── rescan: enqueue any open, non-draft PR missing from the queue ────────────
+// Iterates the live, dashboard-owned watch list (watchedRepos), not a file.
 async function reconcile(reason) {
-  for (const { repo } of cfg.repos) {
+  const repos = watchedRepos
+  if (repos.length === 0) {
+    log(`reconcile (${reason}): watch list empty — nothing to scan`)
+    return
+  }
+  for (const repo of repos) {
     const { code, out, err } = await run("gh", [
       "pr",
       "list",
@@ -386,6 +536,22 @@ async function reconcile(reason) {
 client.onUpdate(api.reviews.claimable, {}, (rows) => {
   latestClaimable = rows
   pump()
+})
+
+// The dashboard-owned watch list. Each change refreshes our copy and, when the
+// set actually changed (including the first load), kicks an immediate reconcile
+// so a newly added repo's open PRs are queued at once — not up to a fallback
+// interval later. `repos.list` returns a sorted array, so index compare is sound.
+client.onUpdate(api.repos.list, {}, (repos) => {
+  const next = repos ?? []
+  const changed =
+    next.length !== watchedRepos.length ||
+    next.some((r, i) => r !== watchedRepos[i])
+  watchedRepos = next
+  if (changed) {
+    log(`watch list (${next.length}): ${next.length ? next.join(", ") : "(empty)"}`)
+    reconcile("watch-change")
+  }
 })
 
 if (cfg.fallbackReconcileMin > 0) {
