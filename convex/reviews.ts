@@ -21,6 +21,9 @@ const enqueueArgs = {
   title: v.string(),
   author: v.string(),
   prUrl: v.string(),
+  // GitHub's pull_request.created_at (ms). Optional: the worker reconcile passes
+  // it when available, but old callers / missing data just leave it unset.
+  prCreatedAt: v.optional(v.number()),
 }
 
 // Insert a queued review unless this exact head SHA already has a live row.
@@ -35,6 +38,7 @@ async function doEnqueue(
     title: string
     author: string
     prUrl: string
+    prCreatedAt?: number
   },
 ): Promise<"enqueued" | "duplicate" | "unwatched"> {
   // The watch list is authoritative for *what gets reviewed*, not just for the
@@ -94,9 +98,12 @@ export const setPrState = internalMutation({
     repo: v.string(),
     prNumber: v.number(),
     state: v.union(v.literal("merged"), v.literal("closed"), v.literal("open")),
+    // GitHub's merged_at/closed_at (ms) — the merge/close moment. Omitted on
+    // "open" (reopen), where we instead clear any stored closedAt.
+    at: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { repo, prNumber, state }) => {
+  handler: async (ctx, { repo, prNumber, state, at }) => {
     const rows = await ctx.db
       .query("reviews")
       .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
@@ -106,7 +113,11 @@ export const setPrState = internalMutation({
         await ctx.db.delete(r._id)
         continue
       }
-      await ctx.db.patch(r._id, { prState: state === "open" ? undefined : state })
+      await ctx.db.patch(r._id, {
+        prState: state === "open" ? undefined : state,
+        // stamp the close moment; a reopen wipes it so "open for…" resumes
+        closedAt: state === "open" ? undefined : at,
+      })
     }
     return null
   },
@@ -364,6 +375,11 @@ const prDoc = v.object({
   p2: v.optional(v.number()),
   progress: v.optional(v.string()),
   updatedAt: v.number(),
+  // GitHub lifecycle anchors for the list/header timing. Optional: a PR whose
+  // rows predate timestamp capture has neither, and the client falls back to
+  // the first pass's queuedAt / updatedAt.
+  prCreatedAt: v.optional(v.number()),
+  closedAt: v.optional(v.number()),
   passes: v.array(prPass),
 })
 
@@ -408,6 +424,9 @@ export const prs = query({
       rows.sort((a, b) => a.queuedAt - b.queuedAt)
       const latest = rows[rows.length - 1]
       const prState = rows.find((r) => r.prState)?.prState
+      // GitHub stamps every row of the PR identically, so the first non-null wins
+      const prCreatedAt = rows.find((r) => r.prCreatedAt != null)?.prCreatedAt
+      const closedAt = rows.find((r) => r.closedAt != null)?.closedAt
       result.push({
         key,
         repo: latest.repo,
@@ -424,6 +443,8 @@ export const prs = query({
         p2: latest.p2,
         progress: latest.progress,
         updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.queuedAt,
+        prCreatedAt,
+        closedAt,
         passes: rows.map((r) => ({
           _id: r._id,
           headSha: r.headSha,
@@ -448,5 +469,60 @@ export const prs = query({
     // newest PR activity first
     result.sort((a, b) => b.updatedAt - a.updatedAt)
     return result
+  },
+})
+
+// --- one-off backfill tooling (worker/backfill.mjs) ---------------------------
+// Existing rows predate prCreatedAt/closedAt capture, so old PRs show the
+// queuedAt/updatedAt fallback. These let a `gh`-driven script fetch each PR's
+// real GitHub timestamps and patch them in. Bounded by a personal console's row
+// count, so the single collect() is acceptable for a one-shot tool.
+
+// Distinct PRs with at least one row still missing a timestamp it should have:
+// every PR wants prCreatedAt; a merged/closed PR also wants closedAt.
+export const prsNeedingTimestamps = query({
+  args: {},
+  returns: v.array(v.object({ repo: v.string(), prNumber: v.number() })),
+  handler: async (ctx) => {
+    const rows = await ctx.db.query("reviews").collect()
+    const need = new Map<string, { repo: string; prNumber: number }>()
+    for (const r of rows) {
+      const needsCreated = r.prCreatedAt == null
+      const needsClosed = r.prState != null && r.closedAt == null
+      if (needsCreated || needsClosed) {
+        const key = `${r.repo}#${r.prNumber}`
+        if (!need.has(key)) need.set(key, { repo: r.repo, prNumber: r.prNumber })
+      }
+    }
+    return [...need.values()]
+  },
+})
+
+// Patch GitHub timestamps onto every row of one PR, but only where the field is
+// still empty — never clobber a value a real webhook already set. Idempotent.
+export const backfillPrTimestamps = mutation({
+  args: {
+    repo: v.string(),
+    prNumber: v.number(),
+    prCreatedAt: v.optional(v.number()),
+    closedAt: v.optional(v.number()),
+  },
+  returns: v.object({ patched: v.number() }),
+  handler: async (ctx, { repo, prNumber, prCreatedAt, closedAt }) => {
+    const rows = await ctx.db
+      .query("reviews")
+      .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
+      .collect()
+    let patched = 0
+    for (const r of rows) {
+      const patch: { prCreatedAt?: number; closedAt?: number } = {}
+      if (prCreatedAt != null && r.prCreatedAt == null) patch.prCreatedAt = prCreatedAt
+      if (closedAt != null && r.closedAt == null) patch.closedAt = closedAt
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(r._id, patch)
+        patched++
+      }
+    }
+    return { patched }
   },
 })
