@@ -176,8 +176,11 @@ If no row appears within ~60s — the symptom of a dropped `synchronize` webhook
 delivery — `await` **self-heals**: it enqueues the review itself via the same
 idempotent `reviews.enqueueMissing` path the worker's reconcile uses, collapsing
 the recovery latency from up to the full fallback-reconcile interval (~30 min) to
-~60s. `doEnqueue` is idempotent, so this is safe even if a late webhook or the
-reconcile also fires (it returns `duplicate`). If the repo isn't watched, the
+~60s. It only heals **open, non-draft** PRs — mirroring the webhook and reconcile,
+which both skip drafts/closed PRs — since for those "no row" is the expected state,
+not a dropped delivery (it keeps waiting instead). `doEnqueue` is idempotent, so
+this is safe even if a late webhook or the reconcile also fires (it returns
+`duplicate`). If the repo isn't watched, the
 self-heal enqueue reports `unwatched`; since no review will ever be queued,
 `await` says so explicitly and **gives up at once (exit 1)** rather than blocking
 out the full timeout — so an unwatched repo now surfaces in ~60s instead of as an

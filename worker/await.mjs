@@ -303,7 +303,7 @@ async function selfHeal() {
   let prCreatedAt
   const meta = ghJson([
     "pr", "view", String(prNumber), "--repo", repo,
-    "--json", "title,author,url,createdAt",
+    "--json", "title,author,url,createdAt,state,isDraft",
   ])
   if (meta) {
     title = meta.title ?? title
@@ -311,6 +311,22 @@ async function selfHeal() {
     prUrl = meta.url ?? prUrl
     const createdMs = Date.parse(meta.createdAt ?? "")
     if (!Number.isNaN(createdMs)) prCreatedAt = createdMs
+  }
+
+  // Don't self-heal a draft or closed/merged PR. Both canonical enqueue paths
+  // skip them on purpose — the webhook ignores `pr.draft` and the reconcile uses
+  // `--state open` + an `isDraft` skip — so "no row after 60s" is the *expected*
+  // state here, not a dropped delivery, and forcing an enqueue would queue a
+  // billed review the system is designed to skip. Keep waiting (a draft marked
+  // ready fires its own `ready_for_review` webhook). gh `state` is uppercase
+  // (OPEN/CLOSED/MERGED); skip the gate only when metadata couldn't be fetched.
+  if (meta && (meta.isDraft === true || (meta.state && meta.state !== "OPEN"))) {
+    process.stderr.write(
+      `prr await: no row for ${short} after 60s, but ${repo}#${prNumber} is ` +
+        `${meta.isDraft ? "a draft" : String(meta.state).toLowerCase()} — ` +
+        `not self-healing (drafts/closed PRs aren't reviewed). Waiting until --timeout\n`,
+    )
+    return
   }
 
   let outcome
