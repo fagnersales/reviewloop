@@ -77,8 +77,8 @@ Arguments:
 
 Options:
   --repo <owner/name>  target repo (default: \`gh repo view\` of the cwd)
-  --head <sha>         ack the review of this exact commit (default: the PR's most
-                       recent reviewed pass)
+  --head <sha>         ack the review of this exact commit (default: the PR's
+                       latest pass — must be reviewed)
   --by <label>         who is acking, free-form (default: \$USER@\$HOST)
   --clear              release a prior ack instead of recording one (agent bailed)
   --json               accepted for clarity; result JSON is always printed to stdout

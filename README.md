@@ -175,6 +175,48 @@ still `queued`, the row is removed and `await` blocks until `--timeout` (exit
 If no row appears within ~60s it warns once to stderr (worker down? webhook not
 wired for this repo?) and keeps waiting until `--timeout`.
 
+## Acknowledging a review (`node worker/ack.mjs`)
+
+A posted review leaves the PR in one of two states the console can't tell apart on
+its own: **Awaiting agent** (reviewed, has blockers, nobody's on it) vs **In
+progress** (an agent has picked it up). The console can't observe the latter —
+an agent has started but hasn't pushed a commit yet — so the agent says so
+explicitly by **acking** the review.
+
+`worker/ack.mjs` is the companion to `await.mjs`: a fix agent runs it once it picks
+up a review it's about to fix. It stamps the `reviews` row (`ackedAt`/`ackedBy`),
+which flips the board badge from **Awaiting agent** to **In progress** and adds an
+"Agent picked it up" step to the review-loop timeline. Invoke it as
+`node worker/ack.mjs <pr>` (or `npm run ack -- <pr> …`); the installed bin alias is
+`prr-ack <pr>`. The natural pairing is **await → ack**:
+
+```bash
+prr-await <pr> --repo owner/name --head <sha>   # block until the review lands
+# … it came back with blockers (exit 2); you're going to fix them:
+prr-ack   <pr> --repo owner/name --head <sha>   # tell the board you're on it
+```
+
+```bash
+node worker/ack.mjs <pr> --repo owner/name
+# defaults: --repo from `gh repo view`; --head = the PR's latest pass when omitted;
+#           --by = $USER@$HOST. --clear releases a prior ack (you bailed).
+```
+
+It's one-shot: it calls the `reviews.ack` mutation and prints the result JSON to
+stdout. Only a still-open **reviewed** pass is ackable (nothing to pick up on a
+queued/reviewing/failed row or a merged/closed PR).
+
+| code | meaning |
+| --- | --- |
+| `0` | ack recorded (or, with `--clear`, released) |
+| `2` | nothing to ack — no reviewed pass for this PR/SHA yet, or the PR is merged/closed |
+| `1` | usage / connection error |
+
+The state is kept honest automatically: a `clearStaleAcks` cron drops an ack left
+on a still-current reviewed pass with no fix pushed within ~90 min, so an abandoned
+**In progress** reverts to **Awaiting agent**. An ack on a pass a later commit has
+already superseded is kept as history.
+
 ## Config (`worker/config.json`)
 
 The **watch list is not here** — repos are managed from the dashboard and stored

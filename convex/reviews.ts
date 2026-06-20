@@ -193,10 +193,11 @@ export const finish = mutation({
 // "In progress" instead of "Awaiting agent"; it's the one fact the console can't
 // observe on its own (an agent has started but hasn't pushed a commit yet).
 //
-// Target resolution mirrors getByPrSha: with `headSha`, the row for that exact
-// commit; without it, the PR's most recent *reviewed* pass (the review an agent
-// would naturally pick up). Only a `reviewed`, still-open pass is ackable — there's
-// nothing to pick up on a queued/reviewing/failed row or a merged/closed PR.
+// Target resolution: with `headSha`, the row for that exact commit; without it,
+// the PR's *latest* pass — the one the board shows — so a concurrent re-push can't
+// make the ack land on a superseded reviewed row and silently no-op. Only a
+// `reviewed`, still-open pass is ackable — there's nothing to pick up on a
+// queued/reviewing/failed row or a merged/closed PR.
 export const ack = mutation({
   args: {
     repo: v.string(),
@@ -222,7 +223,15 @@ export const ack = mutation({
     if (rows.length === 0) return { ok: false, reason: "no review row for this PR" }
 
     // Pick the pass to ack: the exact head SHA if given (preferring its reviewed
-    // row over a stale failed attempt), else the PR's newest reviewed pass.
+    // row over a stale failed attempt), else the PR's *latest* pass.
+    //
+    // For the no-head case, "latest pass" (newest queuedAt across all statuses) is
+    // deliberately what the board surfaces (prs() reads latest.ackedAt) — NOT the
+    // newest *reviewed* pass. If a re-push raced in between await and ack, the
+    // newest reviewed row is already superseded; acking it would silently no-op on
+    // the board. Targeting the latest pass instead means the guard below reports
+    // "pass is reviewing, not reviewed" (the agent can name an older --head to ack
+    // a prior pass on purpose) rather than acking into the void.
     let target
     if (headSha) {
       const forSha = rows.filter((r) => r.headSha === headSha)
@@ -232,10 +241,7 @@ export const ack = mutation({
         forSha.find((r) => r.status === "reviewed") ??
         forSha.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
     } else {
-      const reviewed = rows.filter((r) => r.status === "reviewed")
-      if (reviewed.length === 0)
-        return { ok: false, reason: "no reviewed pass yet — wait for the review" }
-      target = reviewed.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+      target = rows.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
     }
 
     if (target.status !== "reviewed")
