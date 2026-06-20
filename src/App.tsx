@@ -180,9 +180,12 @@ function statusDisplay(pr: Pr): StatusDisplay {
           icon: Activity,
           tone: "border-indigo-400/25 bg-indigo-400/10 text-indigo-200",
         }
-      // Reviewed with blockers and no ack = nobody's picked it up. The signal the
-      // console exists to surface: this branch needs an agent.
-      if ((pr.p0 ?? 0) > 0 || (pr.p1 ?? 0) > 0)
+      // Reviewed with blockers — or counts the worker couldn't parse (null != 0)
+      // — and no ack = nobody's picked it up. The signal the console exists to
+      // surface: this branch needs an agent. Mirrors prr-await, which treats an
+      // unparseable count as a blocker so a parse miss never reads as "clean"
+      // (the safe direction: a legacy countless row shows "Awaiting agent").
+      if (pr.p0 == null || pr.p1 == null || pr.p0 > 0 || pr.p1 > 0)
         return {
           label: "Awaiting agent",
           icon: Hand,
