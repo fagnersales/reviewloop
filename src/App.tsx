@@ -56,6 +56,22 @@ function useIsNarrowViewport() {
   return isNarrow
 }
 
+// The "open only" PR-list filter is a view preference, not server state, so it
+// lives in localStorage and survives reloads.
+const OPEN_ONLY_KEY = "prr.pr-list.open-only"
+
+function useOpenOnly() {
+  const [openOnly, setOpenOnly] = useState(() =>
+    typeof window === "undefined" ? false : window.localStorage.getItem(OPEN_ONLY_KEY) === "1",
+  )
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(OPEN_ONLY_KEY, openOnly ? "1" : "0")
+    }
+  }, [openOnly])
+  return [openOnly, setOpenOnly] as const
+}
+
 function repoShort(repo: string) {
   return repo.split("/").pop() ?? repo
 }
@@ -369,12 +385,10 @@ function RepoSegmented({
         >
           <ListFilter className="size-3.5" />
           All
-          <span className="text-[10px] text-zinc-500">{prs.length}</span>
         </button>
         {repoSet.map((repo) => {
           const key = repo.toLowerCase()
           const active = activeRepo.toLowerCase() === key
-          const count = prs.filter((p) => p.repo.toLowerCase() === key).length
           const isWatched = watched.has(key)
           return (
             <div
@@ -394,7 +408,6 @@ function RepoSegmented({
                 )}
               >
                 {repoShort(repo)}
-                <span className="text-[10px] text-zinc-500">{count}</span>
               </button>
               {isWatched && (
                 <button
@@ -601,6 +614,10 @@ function ReviewReport({ report }: { report: string }) {
   )
 }
 
+// Muted-by-default metadata links in the PR header: they read as plain caption
+// text until hovered, when they reveal their clickability.
+const META_LINK = "rounded-sm underline-offset-2 transition hover:text-zinc-200 hover:underline"
+
 function ReviewDetail({
   pr,
   compact,
@@ -625,6 +642,38 @@ function ReviewDetail({
   }
   const events = buildEvents(pr)
   const latestReport = [...pr.passes].reverse().find((p) => p.report)
+  // With no report yet (the PR's first review), the whole detail body becomes
+  // one centered status state; shape its icon/copy from the live status.
+  const firstReviewError =
+    pr.status === "failed" ? [...pr.passes].reverse().find((p) => p.error)?.error : undefined
+  const firstReview =
+    pr.status === "failed"
+      ? {
+          tone: "border-red-400/25 bg-red-400/10 text-red-300",
+          icon: <AlertTriangle className="size-5" />,
+          title: "Review didn’t complete",
+          body: firstReviewError ?? "The review run errored or timed out before a summary was posted.",
+        }
+      : pr.status === "queued"
+        ? {
+            tone: "border-zinc-700 bg-zinc-900 text-zinc-400",
+            icon: <Clock3 className="size-5" />,
+            title: "Queued for review",
+            body: "Waiting for an available review worker. The summary will appear here once the review is posted.",
+          }
+        : pr.status === "reviewing"
+          ? {
+              tone: "border-sky-400/25 bg-sky-400/10 text-sky-300",
+              icon: <Loader2 className="size-5 animate-spin" />,
+              title: "Reviewing this PR…",
+              body: "The agent is reviewing the first commit. The summary will appear here once it’s done.",
+            }
+          : {
+              tone: "border-zinc-700 bg-zinc-900 text-zinc-500",
+              icon: <Sparkles className="size-5" />,
+              title: "No review yet",
+              body: "No review has been posted for this PR yet.",
+            }
   return (
     <section
       className={cn(
@@ -641,13 +690,43 @@ function ReviewDetail({
             </div>
             <h2 className="mt-3 text-balance text-base font-semibold text-zinc-50">{pr.title}</h2>
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500">
-              <span>{pr.repo}</span>
-              <span className="font-mono">#{pr.prNumber}</span>
-              <span>{pr.author}</span>
-              <span className="flex items-center gap-1 font-mono">
+              <a
+                href={`https://github.com/${pr.repo}`}
+                target="_blank"
+                rel="noreferrer"
+                title={`Open ${pr.repo} on GitHub`}
+                className={META_LINK}
+              >
+                {pr.repo}
+              </a>
+              <a
+                href={pr.prUrl}
+                target="_blank"
+                rel="noreferrer"
+                title="Open this PR on GitHub"
+                className={cn(META_LINK, "font-mono")}
+              >
+                #{pr.prNumber}
+              </a>
+              <a
+                href={`https://github.com/${pr.author}`}
+                target="_blank"
+                rel="noreferrer"
+                title={`Open @${pr.author} on GitHub`}
+                className={META_LINK}
+              >
+                {pr.author}
+              </a>
+              <a
+                href={`https://github.com/${pr.repo}/commit/${pr.headSha}`}
+                target="_blank"
+                rel="noreferrer"
+                title="Open this commit on GitHub"
+                className={cn(META_LINK, "flex items-center gap-1 font-mono")}
+              >
                 <GitCommit className="size-3" />
                 {pr.headSha.slice(0, 7)}
-              </span>
+              </a>
             </div>
           </div>
           <a
@@ -663,49 +742,70 @@ function ReviewDetail({
         </div>
       </div>
 
-      <div
-        className={cn(
-          "grid border-t border-zinc-800",
-          compact
-            ? "grid-cols-1"
-            : "min-h-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] grid-rows-1",
-        )}
-      >
-        <div className={cn("p-4", !compact && "min-h-0 overflow-y-auto border-r border-zinc-800")}>
-          <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
-            <Activity className="size-3.5" />
-            Review loop
+      {latestReport?.report ? (
+        <div
+          className={cn(
+            "grid border-t border-zinc-800",
+            compact
+              ? "grid-cols-1"
+              : "min-h-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] grid-rows-1",
+          )}
+        >
+          <div className={cn("p-4", !compact && "min-h-0 overflow-y-auto border-r border-zinc-800")}>
+            <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+              <Activity className="size-3.5" />
+              Review loop
+            </div>
+            <Timeline events={events} />
           </div>
-          <Timeline events={events} />
-        </div>
 
-        <div className={cn("p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
-          <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
-            <Sparkles className="size-3.5" />
-            Summary
+          <div className={cn("p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
+            <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+              <Sparkles className="size-3.5" />
+              Summary
+            </div>
+            <ReviewReport report={latestReport.report} />
+            {latestReport.reviewUrl && (
+              <a
+                href={latestReport.reviewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
+              >
+                <ExternalLink className="size-3.5" />
+                View review on GitHub
+              </a>
+            )}
           </div>
-          {latestReport?.report ? (
-            <>
-              <ReviewReport report={latestReport.report} />
-              {latestReport.reviewUrl && (
-                <a
-                  href={latestReport.reviewUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
-                >
-                  <ExternalLink className="size-3.5" />
-                  View review on GitHub
-                </a>
-              )}
-            </>
-          ) : (
-            <p className="text-sm leading-6 text-zinc-500">
-              No review has been posted for this PR yet.
+        </div>
+      ) : (
+        // No report yet (the PR's first review): one centered state spanning the
+        // whole body, instead of a sparse two-column split with an empty Summary.
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-3 border-t border-zinc-800 px-6 py-16 text-center",
+            !compact && "min-h-0 flex-1",
+          )}
+        >
+          <span className={cn("flex size-11 items-center justify-center rounded-full border", firstReview.tone)}>
+            {firstReview.icon}
+          </span>
+          <div className="space-y-1.5">
+            <p className="text-sm font-medium text-zinc-200">{firstReview.title}</p>
+            <p className="mx-auto max-w-[42ch] text-xs leading-5 text-zinc-500">{firstReview.body}</p>
+          </div>
+          {pr.status === "reviewing" && pr.progress && (
+            // The live line `claude -p /pr-review` is on right now — the bit the
+            // timeline used to show, surfaced here since the timeline is hidden.
+            <p
+              title={pr.progress}
+              className="mx-auto max-w-[46ch] truncate rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 font-mono text-[11px] text-zinc-400"
+            >
+              {pr.progress}
             </p>
           )}
         </div>
-      </div>
+      )}
     </section>
   )
 }
@@ -736,15 +836,19 @@ function ReviewConsole({
   removeError: string | null
 }) {
   const [query, setQuery] = useState("")
+  const [openOnly, setOpenOnly] = useOpenOnly()
   const trimmed = query.trim().toLowerCase()
+  // `prState` is undefined for open PRs and "merged"/"closed" otherwise, so
+  // "open only" is just the rows with no terminal state.
+  const stateFiltered = openOnly ? repoFiltered.filter((pr) => pr.prState == null) : repoFiltered
   const visible = trimmed
-    ? repoFiltered.filter(
+    ? stateFiltered.filter(
         (pr) =>
           pr.title.toLowerCase().includes(trimmed) ||
           `#${pr.prNumber}`.includes(trimmed) ||
           pr.repo.toLowerCase().includes(trimmed),
       )
-    : repoFiltered
+    : stateFiltered
 
   return (
     <div className={cn(compact ? "p-4" : "flex min-h-0 flex-1 flex-col p-6")}>
@@ -795,12 +899,29 @@ function ReviewConsole({
             )}
           </div>
           <div className={cn("p-3", !compact && "min-h-0 flex-1 overflow-y-auto")}>
-            <div className="mb-2 flex items-center justify-between px-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
+            <div className="mb-2 flex items-center justify-between gap-2 px-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
               <span className="flex items-center gap-2">
                 <GitPullRequest className="size-3.5" />
                 PRs
               </span>
-              <span className="text-zinc-600">{visible.length}</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOpenOnly((v) => !v)}
+                  aria-pressed={openOnly}
+                  title={openOnly ? "Showing open PRs only — click to show all" : "Show only open PRs"}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium transition",
+                    openOnly
+                      ? "border-zinc-600 bg-zinc-800 text-zinc-200"
+                      : "border-zinc-800 bg-zinc-950 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300",
+                  )}
+                >
+                  <ListFilter className="size-3" />
+                  Open only
+                </button>
+                <span className="text-zinc-600">{visible.length}</span>
+              </div>
             </div>
             <PrList
               prs={visible}
@@ -810,9 +931,11 @@ function ReviewConsole({
               emptyLabel={
                 trimmed
                   ? "No PRs match your search."
-                  : activeRepo === "all"
-                    ? "No reviews yet."
-                    : "No reviews for this repository yet."
+                  : openOnly
+                    ? "No open PRs."
+                    : activeRepo === "all"
+                      ? "No reviews yet."
+                      : "No reviews for this repository yet."
               }
             />
           </div>
