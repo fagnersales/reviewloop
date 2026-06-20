@@ -726,7 +726,7 @@ function ReviewDetail({
           <Timeline events={events} />
         </div>
 
-        <div className={cn("p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
+        <div className={cn("flex flex-col p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
           <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
             <Sparkles className="size-3.5" />
             Summary
@@ -746,10 +746,31 @@ function ReviewDetail({
                 </a>
               )}
             </>
+          ) : pr.status === "reviewing" || pr.status === "queued" ? (
+            // First review in flight (no report yet): a centered status card
+            // reads as deliberate, where a top-left sentence looked like the
+            // panel had failed to load.
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+              <span className="flex size-10 items-center justify-center rounded-full border border-sky-400/25 bg-sky-400/10 text-sky-300">
+                <Loader2 className="size-5 animate-spin" />
+              </span>
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-zinc-200">
+                  {pr.status === "queued" ? "Queued for review" : "Reviewing this PR…"}
+                </p>
+                <p className="mx-auto max-w-[34ch] text-xs leading-5 text-zinc-500">
+                  {pr.status === "queued"
+                    ? "Waiting for an available review worker. The summary will appear here once the review is posted."
+                    : "The agent is reviewing the first commit. The summary will appear here once it’s done."}
+                </p>
+              </div>
+            </div>
           ) : (
-            <p className="text-sm leading-6 text-zinc-500">
-              No review has been posted for this PR yet.
-            </p>
+            <div className="flex flex-1 flex-col items-center justify-center px-6 py-12 text-center">
+              <p className="max-w-[34ch] text-sm leading-6 text-zinc-500">
+                No review has been posted for this PR yet.
+              </p>
+            </div>
           )}
         </div>
       </div>
