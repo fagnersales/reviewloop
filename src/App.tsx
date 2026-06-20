@@ -1077,7 +1077,10 @@ export default function App() {
   // than collapsing the panes into one long scroll.
   if (isNarrow) {
     return (
-      <div className="flex h-screen flex-col overflow-hidden bg-[#080809] text-zinc-100">
+      // h-dvh (dynamic viewport height), not h-screen/100vh: on mobile browsers
+      // 100vh is the *largest* viewport, so while the toolbar is showing it pushes
+      // the sheet's bottom-anchored handle behind it. h-dvh tracks the real height.
+      <div className="flex h-dvh flex-col overflow-hidden bg-[#080809] text-zinc-100">
         {loading ? (
           <div className="flex flex-1 items-center justify-center gap-2 text-sm text-zinc-500">
             <Loader2 className="size-4 animate-spin" />
