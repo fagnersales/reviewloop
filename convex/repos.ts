@@ -34,8 +34,11 @@ export const add = mutation({
   },
 })
 
-// Dashboard removes a repo from the watch list. The worker stops reconciling it
-// on the next `list` update; reviews already queued for it still run.
+// Dashboard removes a repo from the watch list. Removal is authoritative: new
+// reviews stop (both the webhook and the reconcile enqueue gate on this table —
+// see doEnqueue in reviews.ts). Reviews already queued/running for it still
+// finish; the GitHub webhook can stay configured (its deliveries just log as
+// "unwatched"), so add/remove here doesn't require touching GitHub.
 export const remove = mutation({
   args: { repo: v.string() },
   returns: v.null(),

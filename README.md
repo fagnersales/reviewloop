@@ -196,8 +196,18 @@ Override any field in `worker/config.local.json` (gitignored), or via env
 ### Managing watched repos
 
 Add/remove repos from the dashboard (the `+` / hover-`×` controls on the repo
-filter). A newly added repo is reconciled **immediately** — its open, non-draft
-PRs are queued at once, without waiting for the fallback timer. Each repo still
-needs the GitHub webhook (one-time setup, step 3) for instant per-push reviews;
-the reconcile is the safety net that also catches repos added before their
-webhook, or events missed while the worker was down.
+filter). The watch list is **authoritative** — both the webhook enqueue and the
+worker reconcile gate on it (`doEnqueue` in `convex/reviews.ts`):
+
+- **Add:** the repo is reconciled **immediately** — its open, non-draft PRs are
+  queued at once, without waiting for the fallback timer. New pushes are reviewed
+  via the GitHub webhook (one-time setup, step 3); the reconcile is the safety net
+  that also catches repos added before their webhook, or events missed while the
+  worker was down.
+- **Remove:** new reviews **stop** — an unwatched repo's webhook deliveries are
+  ignored (logged as `unwatched`) and the reconcile skips it. Reviews already
+  queued or running still finish. The GitHub webhook can stay configured, so
+  add/remove here never requires touching GitHub.
+
+A repo only gets auto-cloned and reviewed (under `claude --permission-mode
+bypassPermissions`) while it's on this list, so keep it to repos you trust.

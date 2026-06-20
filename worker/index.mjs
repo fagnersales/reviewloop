@@ -89,12 +89,19 @@ const CLONE_PREFIX = "prr-review-"
 const CLONE_BASE = process.env.PRR_CLONE_DIR || cfg.cloneDir || tmpdir()
 mkdirSync(CLONE_BASE, { recursive: true })
 
-// The review instructions, loaded once: the pr-review skill body with its YAML
-// frontmatter stripped. A loud failure here beats every review silently failing.
+// The review instructions, loaded once: the pr-review skill body, minus two
+// interactive bits that don't apply to an automated, no-human run —
+//   - the YAML frontmatter, and
+//   - the "## Inputs" section, which resolves *which* PR to review (and may "ask
+//     the user which one"). The PR is supplied explicitly by reviewPrompt's
+//     "This run" appendix, so leaving Inputs in only creates an instruction
+//     conflict. (SKILL.md keeps it for interactive /pr-review use.)
+// A loud failure here beats every review silently failing.
 let REVIEW_SKILL
 try {
   REVIEW_SKILL = readFileSync(SKILL_FILE, "utf8")
     .replace(/^---\n[\s\S]*?\n---\n/, "")
+    .replace(/\n## Inputs\n[\s\S]*?(?=\n## )/, "\n")
     .trim()
   if (!REVIEW_SKILL) throw new Error("empty after stripping frontmatter")
 } catch (e) {
@@ -187,7 +194,10 @@ function sweepStaleClones() {
   } catch {
     return
   }
-  const staleMs = (cfg.reviewTimeoutMin + 30) * 60 * 1000
+  // Guard the default: a missing/NaN reviewTimeoutMin would make `staleMs` NaN,
+  // the age check always false-y, and could sweep a concurrent worker's live clone.
+  const timeoutMin = Number.isFinite(cfg.reviewTimeoutMin) ? cfg.reviewTimeoutMin : 25
+  const staleMs = (timeoutMin + 30) * 60 * 1000
   const now = Date.now()
   let swept = 0
   for (const e of entries) {

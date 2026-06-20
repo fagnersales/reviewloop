@@ -56,7 +56,7 @@ export default defineSchema({
     event: v.string(),
     action: v.optional(v.string()),
     prNumber: v.optional(v.number()),
-    outcome: v.string(), // enqueued | duplicate | ignored | closed | bad-signature
+    outcome: v.string(), // enqueued | duplicate | unwatched | ignored | closed | bad-signature
     receivedAt: v.number(),
   }).index("by_received", ["receivedAt"]),
 
