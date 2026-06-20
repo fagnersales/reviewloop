@@ -5,8 +5,13 @@ import { RollingTicker } from "./rolling-ticker"
 import { type CloudLogLine } from "./types"
 
 // The shell the rolling-ticker plugs into: a compact "last N" animated window
-// with a header, plus an expand-to-fullscreen overlay that scrolls the whole log
-// in the same ticker style. This is the component intended for production use.
+// with a header, plus an expand-to-fullscreen overlay that scrolls the whole
+// accumulated tail in the same ticker style. This is the component intended for
+// production use.
+//
+// Note the labels say "live" rather than "full": `lines` is the tail this client
+// has observed since mount (see useProgressHistory), not the session's complete
+// server-side log.
 export function CloudLogConsole({
   lines,
   title = "Cloud review",
@@ -24,6 +29,8 @@ export function CloudLogConsole({
   className?: string
 }) {
   const [open, setOpen] = useState(false)
+  // Restore focus to the trigger when the overlay closes (a11y).
+  const triggerRef = useRef<HTMLButtonElement>(null)
 
   return (
     <div
@@ -38,11 +45,14 @@ export function CloudLogConsole({
           <span className="truncate text-xs font-medium text-zinc-300">{title}</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span className="tabular-nums text-[10px] text-zinc-600">{lines.length} lines</span>
+          <span className="tabular-nums text-[10px] text-zinc-600">
+            {streaming ? `live · ${lines.length}` : `${lines.length} lines`}
+          </span>
           <button
+            ref={triggerRef}
             type="button"
-            title="Open full log"
-            aria-label="Open full log"
+            title="Expand live log"
+            aria-label="Expand live log"
             onClick={() => setOpen(true)}
             className="rounded p-0.5 text-zinc-500 transition hover:text-zinc-200"
           >
@@ -56,7 +66,15 @@ export function CloudLogConsole({
       </div>
 
       {open && (
-        <CloudLogFullscreen title={title} lines={lines} streaming={streaming} onClose={() => setOpen(false)} />
+        <CloudLogFullscreen
+          title={title}
+          lines={lines}
+          streaming={streaming}
+          onClose={() => {
+            setOpen(false)
+            triggerRef.current?.focus()
+          }}
+        />
       )}
     </div>
   )
@@ -74,11 +92,18 @@ function CloudLogFullscreen({
   onClose: () => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
 
-  // Esc closes; lock background scroll while the overlay is up.
+  // Modal behaviour: focus the overlay on open, Esc closes, Tab stays trapped
+  // inside (the only control is Close), and background scroll is locked.
   useEffect(() => {
+    closeRef.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose()
+      if (e.key === "Tab") {
+        e.preventDefault()
+        closeRef.current?.focus()
+      }
     }
     window.addEventListener("keydown", onKey)
     const prevOverflow = document.body.style.overflow
@@ -101,6 +126,9 @@ function CloudLogFullscreen({
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${title} — live log`}
         className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl shadow-black/50"
         onClick={(e) => e.stopPropagation()}
       >
@@ -108,12 +136,15 @@ function CloudLogFullscreen({
           <div className="flex min-w-0 items-center gap-2">
             <span className={cn("size-1.5 shrink-0 rounded-full", streaming ? "pulse-dot bg-sky-400" : "bg-zinc-600")} />
             <span className="truncate text-sm font-medium text-zinc-200">{title}</span>
-            <span className="tabular-nums text-[11px] text-zinc-600">· {lines.length} lines</span>
+            <span className="tabular-nums text-[11px] text-zinc-600">
+              · {streaming ? `live · ${lines.length} lines` : `${lines.length} lines`}
+            </span>
           </div>
           <button
+            ref={closeRef}
             type="button"
             title="Close"
-            aria-label="Close full log"
+            aria-label="Close live log"
             onClick={onClose}
             className="rounded-md border border-zinc-800 p-1 text-zinc-500 transition hover:border-zinc-700 hover:text-zinc-100"
           >
