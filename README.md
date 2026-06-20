@@ -159,7 +159,7 @@ Exit codes (so a caller can branch without parsing the JSON):
 | `2` | reviewed with blockers — `p0 \|\| p1 > 0`, **or** the counts were unparseable (`null`); either way, read the review |
 | `3` | failed (`error` in the JSON carries the reason) — last-observed state, not final |
 | `124` | timed out (prints last-known state) |
-| `1` | usage / connection error |
+| `1` | usage / connection error, or the repo isn't watched by prr-console (self-heal got `unwatched`) |
 
 Exit `3` is the *last-observed* state, not a final give-up: the worker's fallback
 reconcile (~`fallbackReconcileMin`, default 30 min) re-enqueues open PRs whose only
@@ -178,8 +178,10 @@ idempotent `reviews.enqueueMissing` path the worker's reconcile uses, collapsing
 the recovery latency from up to the full fallback-reconcile interval (~30 min) to
 ~60s. `doEnqueue` is idempotent, so this is safe even if a late webhook or the
 reconcile also fires (it returns `duplicate`). If the repo isn't watched, the
-self-heal enqueue reports `unwatched` and `await` says so explicitly instead of
-silently waiting out the timeout.
+self-heal enqueue reports `unwatched`; since no review will ever be queued,
+`await` says so explicitly and **gives up at once (exit 1)** rather than blocking
+out the full timeout — so an unwatched repo now surfaces in ~60s instead of as an
+ambiguous `124` after `--timeout`.
 
 ## Config (`worker/config.json`)
 

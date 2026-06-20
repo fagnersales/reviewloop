@@ -89,7 +89,7 @@ Exit codes:
   2    reviewed with P0/P1 blockers (or counts unparseable — read the review)
   3    failed
   124  timeout (prints last-known state)
-  1    usage / connection error
+  1    usage / connection error, or repo not watched by prr-console
 `
 
 // ── arg parsing ──────────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ const client = new ConvexClient(CONVEX_URL)
 
 let lastRow = null // newest seen row (for the timeout dump)
 let lastHeartbeat = "" // dedupe the stderr heartbeat
-let warnedMissing = false // worker-down guard fired?
+let selfHealAttempted = false // the 60s self-heal already ran (once)?
 let settled = false // terminal handler already ran?
 
 // Result JSON shape, shared by reviewed / failed / timeout output.
@@ -291,8 +291,8 @@ try {
 // collapsing worst-case latency from ~30min to ~60s. doEnqueue is idempotent
 // (returns "duplicate"), so this is safe even if a late webhook/reconcile fires.
 async function selfHeal() {
-  if (settled || lastRow || warnedMissing) return
-  warnedMissing = true
+  if (settled || lastRow || selfHealAttempted) return
+  selfHealAttempted = true
 
   // PR metadata for the dashboard row — all best-effort. The review itself only
   // needs (repo, prNumber, headSha); construct a deterministic PR URL so even a
@@ -333,18 +333,31 @@ async function selfHeal() {
   }
 
   if (settled) return
-  if (outcome === "enqueued") {
+  if (outcome === "unwatched") {
+    // Definitive: an unwatched repo will never be reviewed, so don't sit idle
+    // until --timeout — surface it and give up now (exit 1, a config error the
+    // caller shouldn't blindly retry). This is the one self-heal outcome we can
+    // be certain about; "enqueued"/"duplicate" still need the worker to finish.
+    settled = true
+    clearTimeout(timeoutTimer)
+    clearTimeout(missingTimer)
+    process.stderr.write(
+      `prr await: ${repo} is not watched by prr-console — no review will be queued. ` +
+        `Add it in the dashboard / worker/config.json.\n`,
+    )
+    await client.close().catch(() => {})
+    process.exit(1)
+  } else if (outcome === "enqueued") {
+    // We queued the row, but only the worker can review it. If it never leaves
+    // "queued" the worker is likely down — keep the old diagnostic so the
+    // operator isn't left guessing until the timeout dump.
     log(
-      `self-healed: no row for ${short} after 60s (dropped webhook?) — enqueued the review myself; waiting`,
+      `self-healed: no row for ${short} after 60s (dropped webhook?) — enqueued the review myself; ` +
+        `waiting (if it stays queued, is the worker running for ${repo}?)`,
     )
   } else if (outcome === "duplicate") {
     log(
       `self-heal: a review row for ${short} already exists — a late webhook/reconcile beat me; waiting`,
-    )
-  } else if (outcome === "unwatched") {
-    process.stderr.write(
-      `prr await: ${repo} is not watched by prr-console — no review will be queued. ` +
-        `Add it in the dashboard / worker/config.json. Still waiting until --timeout\n`,
     )
   }
 }

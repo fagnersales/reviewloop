@@ -29,7 +29,8 @@ to stdout and exits with a verdict code:
 
 - `0` reviewed, clean (no P0/P1) · `2` reviewed but has P0/P1 blockers (or the
   counts came back unparseable — read the review) · `3` failed (`error` in the
-  JSON has the reason) · `124` timeout · `1` usage/connection error.
+  JSON has the reason) · `124` timeout · `1` usage/connection error, or the repo
+  isn't watched by prr-console (self-heal got `unwatched`).
 
 Exit `3` (failed) is the *last-observed* state, not a final give-up: the worker's
 fallback reconcile (~30 min) re-enqueues open PRs whose only rows for the head SHA
@@ -40,7 +41,8 @@ If a push's `synchronize` webhook is dropped, no review row is ever created. Aft
 a ~60s grace period `await` **self-heals** — it enqueues the review itself via the
 idempotent `reviews.enqueueMissing` path, so a missed delivery recovers in ~60s
 instead of waiting up to the full ~30-min reconcile interval. You don't need to do
-anything: keep blocking on `await` as usual.
+anything: keep blocking on `await` as usual. (If self-heal finds the repo isn't
+watched, it gives up at once with exit `1` rather than blocking until `--timeout`.)
 
 Read the JSON (`reviewUrl`, `p0`/`p1`/`p2`, `confidence`) and the exit code to
 decide what to do next. **Branch on the exit code, not the JSON `status`:** on
