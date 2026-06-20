@@ -385,12 +385,10 @@ function RepoSegmented({
         >
           <ListFilter className="size-3.5" />
           All
-          <span className="text-[10px] text-zinc-500">{prs.length}</span>
         </button>
         {repoSet.map((repo) => {
           const key = repo.toLowerCase()
           const active = activeRepo.toLowerCase() === key
-          const count = prs.filter((p) => p.repo.toLowerCase() === key).length
           const isWatched = watched.has(key)
           return (
             <div
@@ -410,7 +408,6 @@ function RepoSegmented({
                 )}
               >
                 {repoShort(repo)}
-                <span className="text-[10px] text-zinc-500">{count}</span>
               </button>
               {isWatched && (
                 <button
