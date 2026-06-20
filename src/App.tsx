@@ -31,7 +31,7 @@ import { CloudLogConsole, useProgressHistory } from "./components/cloud-log"
 
 type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
 type Pass = Pr["passes"][number]
-type AddResult = "added" | "exists" | "invalid"
+type AddResult = "added" | "exists" | "invalid" | "full"
 type EventKind =
   | "opened"
   | "review"
@@ -453,8 +453,12 @@ function RepoSegmented({
       setValue("")
       setError(null)
       setAdding(false)
+    } else if (result === "exists") {
+      setError("Already watched")
+    } else if (result === "full") {
+      setError("Watch list is full")
     } else {
-      setError(result === "exists" ? "Already watched" : "Use owner/name")
+      setError("Use owner/name")
     }
   }
 
