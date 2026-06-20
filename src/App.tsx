@@ -562,7 +562,7 @@ function EventDetail({
     )
   }
 
-  if (event.kind === "agent") {
+  if (event.kind === "agent" || event.kind === "queued") {
     const pass = event.passId ? passById.get(event.passId) : undefined
     const reviewing = pass?.status === "reviewing"
     return (

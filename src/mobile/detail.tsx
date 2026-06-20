@@ -2,6 +2,7 @@
 // timeline and the per-step detail content (review summary / commit list / status
 // card). These mirror the desktop EventDetail / Timeline / CommitsPanel, tuned for
 // a single narrow column and touch targets.
+import { useMemo } from "react"
 import {
   AlertTriangle,
   Clock3,
@@ -352,14 +353,18 @@ export function LiveReviewLog({ progress }: { progress?: string }) {
   return <CloudLogConsole lines={lines} streaming title="Cloud review" bodyClassName="h-[132px]" maxVisible={4} />
 }
 
-// Convenience: derive the loop events + default selection for a PR. The default
-// lands on the latest review that actually has a summary (matching desktop).
+// Derive the loop events + default selection for a PR, memoized on the PR so the
+// events array and passById Map are only rebuilt when the live PR changes (the
+// desktop ReviewDetail memoizes the same way). The default lands on the latest
+// review that actually has a summary.
 export function usePrLoop(pr: Pr) {
-  const events = buildEvents(pr)
-  const passById = new Map<string, Pass>(pr.passes.map((p) => [p._id, p]))
-  const latestReview = [...events]
-    .reverse()
-    .find((e) => e.kind === "review" && passById.get(e.passId ?? "")?.report)
-  const defaultEventId = latestReview?.id ?? events[events.length - 1]?.id ?? null
+  const events = useMemo(() => buildEvents(pr), [pr])
+  const passById = useMemo(() => new Map<string, Pass>(pr.passes.map((p) => [p._id, p])), [pr])
+  const defaultEventId = useMemo(() => {
+    const latestReview = [...events]
+      .reverse()
+      .find((e) => e.kind === "review" && passById.get(e.passId ?? "")?.report)
+    return latestReview?.id ?? events[events.length - 1]?.id ?? null
+  }, [events, passById])
   return { events, passById, defaultEventId }
 }

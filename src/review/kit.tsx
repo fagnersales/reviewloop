@@ -1,9 +1,7 @@
-// Shared foundation for the mobile variants.
-//
-// The pure helpers and presentational atoms here mirror the ones currently
-// living inside src/App.tsx. They're duplicated for now so the desktop view
-// stays untouched while we explore mobile layouts; once a variant is chosen we
-// unify these into one module that both App.tsx and the mobile view import.
+// Shared review kit: the types, hooks, pure helpers, and presentational atoms
+// used by both the desktop console (src/App.tsx) and the mobile view
+// (src/mobile/*). This is the single source of truth for that logic — App.tsx
+// imports from here rather than defining its own copies.
 import { useEffect, useState } from "react"
 import { type FunctionReturnType } from "convex/server"
 import Markdown from "markdown-to-jsx"
@@ -129,11 +127,6 @@ export function findingsLine(x: { p0?: number; p1?: number; p2?: number }) {
   if (p1) parts.push(`${p1} P1`)
   if (p2) parts.push(`${p2} P2`)
   return parts.join(" · ")
-}
-
-// Highest-severity blocker count, used to flag a PR as "needs attention".
-export function blockerCount(x: { p0?: number; p1?: number }) {
-  return (x.p0 ?? 0) + (x.p1 ?? 0)
 }
 
 export type StatusDisplay = { label: string; icon: LucideIcon; tone: string; spin?: boolean }

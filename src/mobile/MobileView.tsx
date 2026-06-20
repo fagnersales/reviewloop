@@ -4,7 +4,7 @@
 // — a page change, not an overlay. The detail shows the PR header and the review
 // loop; tapping a loop step raises a bottom sheet with that step's content (review
 // summary, commit list, in-flight status, …).
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import {
   Activity,
   ChevronLeft,
@@ -22,6 +22,10 @@ import { EventDetailContent, ReviewLoop, usePrLoop } from "./detail"
 import { DraggableSheet } from "./sheet"
 
 const META_LINK = "rounded-sm underline-offset-2 transition active:text-zinc-200"
+
+// Hoisted so the sheet receives a stable `snaps` reference — a fresh array each
+// render would re-run the sheet's open-effect on every Convex live update.
+const SHEET_SNAPS = [0.85]
 
 // The PR detail header: status + score, title, and the metadata row of links.
 function DetailHeader({ pr }: { pr: Pr }) {
@@ -67,6 +71,11 @@ function DetailScreen({ pr, onBack }: { pr: Pr; onBack: () => void }) {
   const { events, passById, defaultEventId } = usePrLoop(pr)
   const [sheetId, setSheetId] = useState<string | null>(null)
   const selectedEvent = events.find((e) => e.id === sheetId) ?? null
+  // Keep the last opened step rendered while the sheet slides out, so its body
+  // doesn't blank before the close animation finishes.
+  const lastEventRef = useRef(selectedEvent)
+  if (selectedEvent) lastEventRef.current = selectedEvent
+  const shownEvent = selectedEvent ?? lastEventRef.current
 
   return (
     <div className="flex h-full flex-col bg-[#080809]">
@@ -108,7 +117,7 @@ function DetailScreen({ pr, onBack }: { pr: Pr; onBack: () => void }) {
       <DraggableSheet
         open={sheetId !== null}
         onClose={() => setSheetId(null)}
-        snaps={[0.85]}
+        snaps={SHEET_SNAPS}
         header={
           <div className="flex items-center justify-between gap-2 px-4 pb-2 pt-1">
             <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">Step detail</span>
@@ -122,7 +131,7 @@ function DetailScreen({ pr, onBack }: { pr: Pr; onBack: () => void }) {
           </div>
         }
       >
-        <EventDetailContent pr={pr} event={selectedEvent} passById={passById} />
+        <EventDetailContent pr={pr} event={shownEvent} passById={passById} />
       </DraggableSheet>
     </div>
   )
@@ -130,9 +139,17 @@ function DetailScreen({ pr, onBack }: { pr: Pr; onBack: () => void }) {
 
 export function MobileView({ prs }: { prs: Pr[] }) {
   const [activeRepo, setActiveRepo] = useState("all")
-  const [selected, setSelected] = useState<Pr | null>(null)
+  // Store the selection by key and re-derive the live PR object each render, so
+  // the detail screen keeps receiving Convex updates (status, new rounds,
+  // streaming progress) while a review is in flight. A snapshot would freeze it.
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [query, setQuery] = useState("")
   const [openOnly, setOpenOnly] = useOpenOnly()
+
+  const selected = useMemo(
+    () => (selectedKey ? prs.find((p) => p.key === selectedKey) ?? null : null),
+    [prs, selectedKey],
+  )
 
   const repos = useMemo(
     () => Array.from(new Set(prs.map((p) => p.repo))).sort((a, b) => a.localeCompare(b)),
@@ -210,7 +227,7 @@ export function MobileView({ prs }: { prs: Pr[] }) {
             </div>
             <div className="space-y-2">
               {visible.map((pr) => (
-                <PrCard key={pr.key} pr={pr} onTap={setSelected} showRepo={activeRepo === "all"} />
+                <PrCard key={pr.key} pr={pr} onTap={(p) => setSelectedKey(p.key)} showRepo={activeRepo === "all"} />
               ))}
               {visible.length === 0 && (
                 <div className="rounded-xl border border-dashed border-zinc-800 p-6 text-center text-xs text-zinc-500">
@@ -229,7 +246,7 @@ export function MobileView({ prs }: { prs: Pr[] }) {
           selected ? "translate-x-0" : "translate-x-full",
         )}
       >
-        {selected && <DetailScreen pr={selected} onBack={() => setSelected(null)} />}
+        {selected && <DetailScreen pr={selected} onBack={() => setSelectedKey(null)} />}
       </div>
     </div>
   )
