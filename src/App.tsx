@@ -165,6 +165,7 @@ function buildEvents(pr: Pr): TimelineEvent[] {
       title: "PR opened",
       body: `Opened by ${pr.author}.`,
       time: first.queuedAt,
+      passId: first._id,
       headSha: first.headSha,
     })
   }
@@ -607,10 +608,10 @@ function Timeline({
   )
 }
 
-function PanelHeader({ icon: Icon, label }: { icon: LucideIcon; label: string }) {
+function PanelHeader({ icon: Icon, label, spin }: { icon: LucideIcon; label: string; spin?: boolean }) {
   return (
     <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
-      <Icon className="size-3.5" />
+      <Icon className={cn("size-3.5", spin && "animate-spin")} />
       {label}
     </div>
   )
@@ -756,12 +757,24 @@ function CommitsPanel({ pr, pass }: { pr: Pr; pass?: Pass }) {
 
 // A small "what is this step" card for the loop anchors (opened / merged / closed
 // / failed / in-flight) — the steps that aren't a full review or a commit list.
-function InfoCard({ tone, icon, title, body }: { tone: string; icon: LucideIcon; title: string; body: string }) {
+function InfoCard({
+  tone,
+  icon,
+  title,
+  body,
+  spin,
+}: {
+  tone: string
+  icon: LucideIcon
+  title: string
+  body: string
+  spin?: boolean
+}) {
   const Icon = icon
   return (
     <div className="flex items-start gap-3 rounded-md border border-zinc-800 bg-zinc-900/40 p-3">
       <span className={cn("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border", tone)}>
-        <Icon className="size-3.5" />
+        <Icon className={cn("size-3.5", spin && "animate-spin")} />
       </span>
       <div className="min-w-0">
         <p className="text-sm font-medium text-zinc-200">{title}</p>
@@ -829,7 +842,11 @@ function EventDetail({
     const reviewing = pass?.status === "reviewing"
     return (
       <div>
-        <PanelHeader icon={reviewing ? Loader2 : Clock3} label={reviewing ? "Reviewing" : "Queued"} />
+        <PanelHeader
+          icon={reviewing ? Loader2 : Clock3}
+          label={reviewing ? "Reviewing" : "Queued"}
+          spin={reviewing}
+        />
         <InfoCard
           tone={
             reviewing ? "border-sky-400/30 text-sky-300" : "border-zinc-700 text-zinc-400"
@@ -841,6 +858,7 @@ function EventDetail({
               ? "The summary will appear here once the review is posted."
               : "Waiting for an available review worker."
           }
+          spin={reviewing}
         />
         {reviewing && pass?.progress && (
           <p
@@ -870,6 +888,9 @@ function EventDetail({
   }
 
   if (event.kind === "opened") {
+    // The opening push is a "Commits landed" with no SHA-change marker, so its
+    // commits are surfaced here — the only place they're reachable in the loop.
+    const pass = event.passId ? passById.get(event.passId) : undefined
     return (
       <div>
         <PanelHeader icon={GitPullRequest} label="Pull request opened" />
@@ -880,6 +901,11 @@ function EventDetail({
           body={`This review loop started ${ago(event.time, now)}.`}
         />
         <GitHubLink href={pr.prUrl} label="View pull request on GitHub" />
+        {pass?.commits && pass.commits.length > 0 && (
+          <div className="mt-5">
+            <CommitsPanel pr={pr} pass={pass} />
+          </div>
+        )}
       </div>
     )
   }
