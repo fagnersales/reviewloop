@@ -376,6 +376,23 @@ async function reviewClone(row, short, cloneDir) {
   const report = reportText.slice(-4000)
   const ok = code === 0 && !resultIsError
 
+  // Cap the durable log with a terminal, kinded line. The cloud-log console
+  // renders the dot in its severity colour (green "done" / red "error"), so the
+  // full log has a clear end marker — and this is the line that makes the
+  // ticker's severity rendering live (plain progress lines carry no kind). It
+  // must go out *before* `finish` flips the row out of "reviewing", after which
+  // updateProgress is a no-op.
+  const endLine = ok
+    ? `Review posted${parsed.confidence != null ? ` · confidence ${parsed.confidence}/5` : ""}`
+    : `Review run did not complete (claude exit ${code}${resultIsError ? ", result error" : ""})`
+  await client
+    .mutation(api.reviews.updateProgress, {
+      id: row._id,
+      line: endLine,
+      kind: ok ? "done" : "error",
+    })
+    .catch(() => {})
+
   if (ok) {
     log(`✓ reviewed #${row.prNumber} (confidence ${parsed.confidence ?? "?"}/5)`)
     await finish(row, true, { reviewUrl, report, ...parsed })
