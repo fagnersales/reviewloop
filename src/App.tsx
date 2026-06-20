@@ -16,6 +16,7 @@ import {
   Loader2,
   type LucideIcon,
   Plus,
+  RotateCw,
   Rows3,
   Search,
   Sparkles,
@@ -57,6 +58,13 @@ function useIsNarrowViewport() {
 
 function repoShort(repo: string) {
   return repo.split("/").pop() ?? repo
+}
+
+// A "round" = one review pass over a head SHA. A failed run can be retried,
+// producing several `reviews` rows for the *same* SHA, so count distinct head
+// SHAs (the actual commits reviewed) rather than raw passes.
+function roundCount(pr: Pr) {
+  return new Set(pr.passes.map((p) => p.headSha)).size
 }
 
 function findingsLine(x: { p0?: number; p1?: number; p2?: number }) {
@@ -276,6 +284,19 @@ function ScoreBadge({ score }: { score?: number }) {
   )
 }
 
+// How many review rounds a PR has been through, shown as a peer of ScoreBadge.
+function RoundsBadge({ count }: { count: number }) {
+  return (
+    <span
+      title={`${count} review ${count === 1 ? "round" : "rounds"}`}
+      className="inline-flex items-center gap-1 rounded-md border border-zinc-700/80 bg-zinc-900 px-1.5 py-0.5 text-[11px] font-medium text-zinc-400"
+    >
+      <RotateCw className="size-3" />
+      {count}
+    </span>
+  )
+}
+
 function RepoSegmented({
   repos,
   prs,
@@ -478,7 +499,10 @@ function PrList({
               )}
               <span className="shrink-0">#{pr.prNumber}</span>
             </span>
-            <ScoreBadge score={pr.confidence} />
+            <span className="flex shrink-0 items-center gap-1.5">
+              <RoundsBadge count={roundCount(pr)} />
+              <ScoreBadge score={pr.confidence} />
+            </span>
           </div>
           <div className="mt-1.5 flex items-center justify-between gap-2">
             <span className="min-w-0 flex-1 truncate text-xs">{pr.title}</span>
