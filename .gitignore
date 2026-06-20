@@ -7,3 +7,5 @@ worker/worker.out
 worker/worker.pid
 worker/logs/
 *.tsbuildinfo
+.claude/worktrees/
+.playwright-mcp/
