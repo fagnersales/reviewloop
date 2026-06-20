@@ -43,3 +43,22 @@ decide what to do next. **Branch on the exit code, not the JSON `status`:** on
 while its review is still `queued`, the row is removed and `await` blocks until
 `--timeout` (exit `124`) rather than exiting early. `--head <sha>` and `--repo`
 are auto-resolved from `gh` when omitted; `--timeout <seconds>` defaults to 1800.
+
+## Acknowledging a review you pick up (for Claude Code)
+
+When `await` returns a review with blockers (exit `2`) that **you are going to
+fix**, ACK it so the console stops showing **Awaiting agent** ("reviewed, nobody's
+on it") and shows **In progress** instead. The console can't know an agent has
+started until that agent pushes a commit — acking is how you tell it. Run:
+
+```bash
+node worker/ack.mjs <pr> --repo <owner/name> --head <sha>
+```
+
+(installed bin alias: `prr-ack <pr>`). It stamps the `reviews` row for that head
+SHA and exits: `0` acked · `2` nothing to ack (no reviewed pass yet, or the PR is
+merged/closed) · `1` usage/connection error. `--head` defaults to the PR's latest
+pass; `--repo` is auto-resolved from `gh`. When you bail on a PR you acked, release
+it with `--clear`. You don't need to ack a clean review (exit `0`) — there's
+nothing to pick up. The ack is dropped automatically (~90 min) if you ack but never
+push a fix, so the board reverts to **Awaiting agent** for someone else.

@@ -12,6 +12,7 @@ import {
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
+  Hand,
   ListFilter,
   Loader2,
   type LucideIcon,
@@ -30,8 +31,16 @@ import { CloudLogConsole } from "./components/cloud-log"
 
 type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
 type Pass = Pr["passes"][number]
-type AddResult = "added" | "exists" | "invalid"
-type EventKind = "opened" | "review" | "agent" | "commit" | "merged" | "failed" | "closed"
+type AddResult = "added" | "exists" | "invalid" | "full"
+type EventKind =
+  | "opened"
+  | "review"
+  | "agent"
+  | "ack"
+  | "commit"
+  | "merged"
+  | "failed"
+  | "closed"
 
 type TimelineEvent = {
   id: string
@@ -163,12 +172,32 @@ function statusDisplay(pr: Pr): StatusDisplay {
         icon: Clock3,
         tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400",
       }
-    case "reviewed":
+    case "reviewed": {
+      // A reviewed pass an agent has acked = real, trustworthy "someone's on it".
+      if (pr.ackedAt != null)
+        return {
+          label: "In progress",
+          icon: Activity,
+          tone: "border-indigo-400/25 bg-indigo-400/10 text-indigo-200",
+        }
+      // Reviewed with blockers — or counts the worker couldn't parse (null != 0)
+      // — and no ack = nobody's picked it up. The signal the console exists to
+      // surface: this branch needs an agent. Mirrors prr-await, which treats an
+      // unparseable count as a blocker so a parse miss never reads as "clean"
+      // (the safe direction: a legacy countless row shows "Awaiting agent").
+      if (pr.p0 == null || pr.p1 == null || pr.p0 > 0 || pr.p1 > 0)
+        return {
+          label: "Awaiting agent",
+          icon: Hand,
+          tone: "border-amber-400/25 bg-amber-400/10 text-amber-200",
+        }
+      // Clean review (no blockers) = ready to merge, nothing to pick up.
       return {
         label: "Reviewed",
         icon: CheckCircle2,
         tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
       }
+    }
     case "failed":
       return {
         label: "Failed",
@@ -229,6 +258,19 @@ function buildEvents(pr: Pr): TimelineEvent[] {
         passId: pass._id,
         headSha: pass.headSha,
       })
+      // An agent acked this review (via prr-ack) and is on the findings — the
+      // trustworthy "someone picked it up" the console can't otherwise know.
+      if (pass.ackedAt != null) {
+        events.push({
+          id: `${pass._id}-ack`,
+          kind: "ack",
+          title: "Agent picked it up",
+          body: `${pass.ackedBy ?? "An agent"} is working on the findings.`,
+          time: pass.ackedAt,
+          passId: pass._id,
+          headSha: pass.headSha,
+        })
+      }
     } else if (pass.status === "reviewing") {
       events.push({
         id: pass._id,
@@ -302,6 +344,8 @@ function eventIcon(kind: EventKind): LucideIcon {
       return Rows3
     case "agent":
       return Loader2
+    case "ack":
+      return Hand
     case "commit":
       return GitCommit
     case "merged":
@@ -320,6 +364,7 @@ function EventGlyph({ kind }: { kind: EventKind }) {
       className={cn(
         "relative z-10 flex size-7 shrink-0 items-center justify-center rounded-md border bg-zinc-950",
         kind === "agent" && "border-sky-400/30 text-sky-300",
+        kind === "ack" && "border-indigo-400/30 text-indigo-300",
         kind === "review" && "border-amber-400/30 text-amber-300",
         kind === "commit" && "border-violet-400/30 text-violet-300",
         kind === "merged" && "border-emerald-400/30 text-emerald-300",
@@ -408,8 +453,12 @@ function RepoSegmented({
       setValue("")
       setError(null)
       setAdding(false)
+    } else if (result === "exists") {
+      setError("Already watched")
+    } else if (result === "full") {
+      setError("Watch list is full")
     } else {
-      setError(result === "exists" ? "Already watched" : "Use owner/name")
+      setError("Use owner/name")
     }
   }
 
@@ -909,6 +958,22 @@ function EventDetail({
         {reviewing && pass && (
           <LiveReviewLog reviewId={pass._id} className="mt-3 w-full text-left" />
         )}
+      </div>
+    )
+  }
+
+  if (event.kind === "ack") {
+    const pass = event.passId ? passById.get(event.passId) : undefined
+    return (
+      <div>
+        <PanelHeader icon={Hand} label="Picked up by an agent" />
+        <InfoCard
+          tone="border-indigo-400/30 text-indigo-300"
+          icon={Hand}
+          title={`Acked by ${pass?.ackedBy ?? "an agent"}`}
+          body={`Picked up ${ago(event.time, now)} — an agent is working on the findings. Stays "In progress" until a fix is pushed (or the ack goes stale and it reverts to "Awaiting agent").`}
+        />
+        {pass?.reviewUrl && <GitHubLink href={pass.reviewUrl} label="View review on GitHub" />}
       </div>
     )
   }
