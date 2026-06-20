@@ -3,6 +3,7 @@ import { mutation, query, internalMutation } from "./_generated/server"
 import type { MutationCtx } from "./_generated/server"
 import type { Doc } from "./_generated/dataModel"
 import { commitInfo, reviewFields, reviewStatus } from "./schema"
+import { MAX_WATCHED_REPOS } from "./repos"
 
 const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed worker
 
@@ -46,10 +47,11 @@ async function doEnqueue(
   // reconcile (`enqueueMissing`) — funnel through here, so gating on `watchedRepos`
   // means a repo removed from the dashboard stops getting new reviews, and a repo
   // never added can't trigger an (unsandboxed) auto-clone-and-review at all. Repo
-  // slugs are case-insensitive, matched the same way as convex/repos.ts. The set is
-  // config-scale, so a single `.collect()` is bounded and acceptable.
+  // slugs are case-insensitive, matched the same way as convex/repos.ts. The watch
+  // list is capped at MAX_WATCHED_REPOS by `repos.add`, so `.take(...)` reads the
+  // whole set while keeping this gate read-bounded now that `add` is public.
   const target = a.repo.toLowerCase()
-  const watched = await ctx.db.query("watchedRepos").collect()
+  const watched = await ctx.db.query("watchedRepos").take(MAX_WATCHED_REPOS)
   if (!watched.some((r) => r.repo.toLowerCase() === target)) return "unwatched"
 
   const existing = await ctx.db
