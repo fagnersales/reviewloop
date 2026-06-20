@@ -626,8 +626,13 @@ function ReviewDetail({
   const events = buildEvents(pr)
   const latestReport = [...pr.passes].reverse().find((p) => p.report)
   return (
-    <section className="rounded-lg border border-zinc-800 bg-zinc-950/70">
-      <div className="border-b border-zinc-800 p-4">
+    <section
+      className={cn(
+        "rounded-lg border border-zinc-800 bg-zinc-950/70",
+        !compact && "flex min-h-0 flex-col",
+      )}
+    >
+      <div className="shrink-0 border-b border-zinc-800 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
@@ -661,10 +666,12 @@ function ReviewDetail({
       <div
         className={cn(
           "grid border-t border-zinc-800",
-          compact ? "grid-cols-1" : "grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]",
+          compact
+            ? "grid-cols-1"
+            : "min-h-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] grid-rows-1",
         )}
       >
-        <div className={cn("p-4", !compact && "border-r border-zinc-800")}>
+        <div className={cn("p-4", !compact && "min-h-0 overflow-y-auto border-r border-zinc-800")}>
           <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
             <Activity className="size-3.5" />
             Review loop
@@ -672,7 +679,7 @@ function ReviewDetail({
           <Timeline events={events} />
         </div>
 
-        <div className={cn("p-4", compact && "border-t border-zinc-800")}>
+        <div className={cn("p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
           <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
             <Sparkles className="size-3.5" />
             Summary
@@ -740,8 +747,8 @@ function ReviewConsole({
     : repoFiltered
 
   return (
-    <div className={cn("p-4", !compact && "p-6")}>
-      <div className="mb-4">
+    <div className={cn(compact ? "p-4" : "flex min-h-0 flex-1 flex-col p-6")}>
+      <div className="mb-4 shrink-0">
         <RepoSegmented
           repos={repos}
           prs={allPrs}
@@ -753,9 +760,21 @@ function ReviewConsole({
         />
       </div>
 
-      <div className={cn("grid gap-4", compact ? "grid-cols-1" : "grid-cols-[20rem_minmax(0,1fr)]")}>
-        <section className="self-start overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/70">
-          <div className="flex h-10 items-center gap-2 border-b border-zinc-800 px-3 transition focus-within:bg-zinc-900/40">
+      <div
+        className={cn(
+          "grid gap-4",
+          compact
+            ? "grid-cols-1"
+            : "min-h-0 flex-1 grid-cols-[20rem_minmax(0,1fr)] grid-rows-1",
+        )}
+      >
+        <section
+          className={cn(
+            "overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/70",
+            compact ? "self-start" : "flex min-h-0 flex-col",
+          )}
+        >
+          <div className="flex h-10 shrink-0 items-center gap-2 border-b border-zinc-800 px-3 transition focus-within:bg-zinc-900/40">
             <Search className="size-4 shrink-0 text-zinc-500" />
             <input
               value={query}
@@ -775,7 +794,7 @@ function ReviewConsole({
               </button>
             )}
           </div>
-          <div className="p-3">
+          <div className={cn("p-3", !compact && "min-h-0 flex-1 overflow-y-auto")}>
             <div className="mb-2 flex items-center justify-between px-1 text-xs font-medium uppercase tracking-wide text-zinc-500">
               <span className="flex items-center gap-2">
                 <GitPullRequest className="size-3.5" />
@@ -875,8 +894,13 @@ export default function App() {
   const repos = reposData ?? []
 
   return (
-    <div className="min-h-full bg-[#080809] text-zinc-100">
-      <header className="sticky top-0 z-20 border-b border-zinc-800/80 bg-[#080809]/95 backdrop-blur">
+    <div
+      className={cn(
+        "bg-[#080809] text-zinc-100",
+        compact ? "min-h-full" : "flex h-screen flex-col overflow-hidden",
+      )}
+    >
+      <header className="sticky top-0 z-20 shrink-0 border-b border-zinc-800/80 bg-[#080809]/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-2 px-4 py-3">
           <div className="flex size-8 items-center justify-center rounded-md border border-zinc-800 bg-zinc-950">
             <GitPullRequest className="size-4 text-sky-300" />
@@ -890,7 +914,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-3 py-4">
+      <main className={cn("mx-auto w-full max-w-7xl px-3 py-4", !compact && "flex min-h-0 flex-1 flex-col")}>
         {loading ? (
           <div className="flex min-h-[60vh] items-center justify-center gap-2 text-sm text-zinc-500">
             <Loader2 className="size-4 animate-spin" />
