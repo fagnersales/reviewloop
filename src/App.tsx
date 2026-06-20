@@ -642,6 +642,38 @@ function ReviewDetail({
   }
   const events = buildEvents(pr)
   const latestReport = [...pr.passes].reverse().find((p) => p.report)
+  // With no report yet (the PR's first review), the whole detail body becomes
+  // one centered status state; shape its icon/copy from the live status.
+  const firstReviewError =
+    pr.status === "failed" ? [...pr.passes].reverse().find((p) => p.error)?.error : undefined
+  const firstReview =
+    pr.status === "failed"
+      ? {
+          tone: "border-red-400/25 bg-red-400/10 text-red-300",
+          icon: <AlertTriangle className="size-5" />,
+          title: "Review didn’t complete",
+          body: firstReviewError ?? "The review run errored or timed out before a summary was posted.",
+        }
+      : pr.status === "queued"
+        ? {
+            tone: "border-sky-400/25 bg-sky-400/10 text-sky-300",
+            icon: <Loader2 className="size-5 animate-spin" />,
+            title: "Queued for review",
+            body: "Waiting for an available review worker. The summary will appear here once the review is posted.",
+          }
+        : pr.status === "reviewing"
+          ? {
+              tone: "border-sky-400/25 bg-sky-400/10 text-sky-300",
+              icon: <Loader2 className="size-5 animate-spin" />,
+              title: "Reviewing this PR…",
+              body: "The agent is reviewing the first commit. The summary will appear here once it’s done.",
+            }
+          : {
+              tone: "border-zinc-700 bg-zinc-900 text-zinc-500",
+              icon: <Sparkles className="size-5" />,
+              title: "No review yet",
+              body: "No review has been posted for this PR yet.",
+            }
   return (
     <section
       className={cn(
@@ -710,85 +742,70 @@ function ReviewDetail({
         </div>
       </div>
 
-      <div
-        className={cn(
-          "grid border-t border-zinc-800",
-          compact
-            ? "grid-cols-1"
-            : "min-h-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] grid-rows-1",
-        )}
-      >
-        <div className={cn("p-4", !compact && "min-h-0 overflow-y-auto border-r border-zinc-800")}>
-          <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
-            <Activity className="size-3.5" />
-            Review loop
+      {latestReport?.report ? (
+        <div
+          className={cn(
+            "grid border-t border-zinc-800",
+            compact
+              ? "grid-cols-1"
+              : "min-h-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] grid-rows-1",
+          )}
+        >
+          <div className={cn("p-4", !compact && "min-h-0 overflow-y-auto border-r border-zinc-800")}>
+            <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+              <Activity className="size-3.5" />
+              Review loop
+            </div>
+            <Timeline events={events} />
           </div>
-          <Timeline events={events} />
-        </div>
 
-        <div className={cn("flex flex-col p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
-          <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
-            <Sparkles className="size-3.5" />
-            Summary
+          <div className={cn("flex flex-col p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
+            <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+              <Sparkles className="size-3.5" />
+              Summary
+            </div>
+            <ReviewReport report={latestReport.report} />
+            {latestReport.reviewUrl && (
+              <a
+                href={latestReport.reviewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
+              >
+                <ExternalLink className="size-3.5" />
+                View review on GitHub
+              </a>
+            )}
           </div>
-          {latestReport?.report ? (
-            <>
-              <ReviewReport report={latestReport.report} />
-              {latestReport.reviewUrl && (
-                <a
-                  href={latestReport.reviewUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
-                >
-                  <ExternalLink className="size-3.5" />
-                  View review on GitHub
-                </a>
-              )}
-            </>
-          ) : pr.status === "reviewing" || pr.status === "queued" ? (
-            // First review in flight (no report yet): a centered status card
-            // reads as deliberate, where a top-left sentence looked like the
-            // panel had failed to load.
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12 text-center">
-              <span className="flex size-10 items-center justify-center rounded-full border border-sky-400/25 bg-sky-400/10 text-sky-300">
-                <Loader2 className="size-5 animate-spin" />
-              </span>
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-zinc-200">
-                  {pr.status === "queued" ? "Queued for review" : "Reviewing this PR…"}
-                </p>
-                <p className="mx-auto max-w-[34ch] text-xs leading-5 text-zinc-500">
-                  {pr.status === "queued"
-                    ? "Waiting for an available review worker. The summary will appear here once the review is posted."
-                    : "The agent is reviewing the first commit. The summary will appear here once it’s done."}
-                </p>
-              </div>
-            </div>
-          ) : pr.status === "failed" ? (
-            // A failed first pass has no report either; say so plainly instead
-            // of falling through to the "not posted yet" copy, which would read
-            // as still-pending when the run actually errored out.
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12 text-center">
-              <span className="flex size-10 items-center justify-center rounded-full border border-red-400/25 bg-red-400/10 text-red-300">
-                <AlertTriangle className="size-5" />
-              </span>
-              <div className="space-y-1">
-                <p className="text-sm font-medium text-zinc-200">Review didn’t complete</p>
-                <p className="mx-auto max-w-[34ch] text-xs leading-5 text-zinc-500">
-                  The latest run errored or timed out — see the review loop for details.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center px-6 py-12 text-center">
-              <p className="max-w-[34ch] text-sm leading-6 text-zinc-500">
-                No review has been posted for this PR yet.
-              </p>
-            </div>
+        </div>
+      ) : (
+        // No report yet (the PR's first review): one centered state spanning the
+        // whole body, instead of a sparse two-column split with an empty Summary.
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-3 border-t border-zinc-800 px-6 py-16 text-center",
+            !compact && "min-h-0 flex-1",
+          )}
+        >
+          <span className={cn("flex size-11 items-center justify-center rounded-full border", firstReview.tone)}>
+            {firstReview.icon}
+          </span>
+          <div className="space-y-1.5">
+            <p className="text-sm font-medium text-zinc-200">{firstReview.title}</p>
+            <p className="mx-auto max-w-[42ch] text-xs leading-5 text-zinc-500">{firstReview.body}</p>
+          </div>
+          {pr.status === "reviewing" && pr.progress && (
+            // The live line `claude -p /pr-review` is on right now — the bit the
+            // timeline used to show, surfaced here since the timeline is hidden.
+            <p
+              title={pr.progress}
+              className="mx-auto max-w-[46ch] truncate rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 font-mono text-[11px] text-zinc-400"
+            >
+              {pr.progress}
+            </p>
           )}
         </div>
-      </div>
+      )}
     </section>
   )
 }
