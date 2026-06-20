@@ -2,22 +2,24 @@
 // chips, and a compact status-glance strip. Reused across the mobile variants.
 import { Clock3, ListFilter, RotateCw } from "lucide-react"
 import { cn } from "../lib/cn"
-import { type Pr, ScoreBadge, StatusBadge, prTiming, repoShort, roundCount, useNow } from "../review/kit"
+import { type Pr, ScoreBadge, StatusBadge, prTiming, repoShort, roundCount } from "../review/kit"
 
 // A single tappable PR row. The whole row is the tap target that opens the PR's
-// detail screen.
+// detail screen. `now` is supplied by the list so a single clock drives every
+// card, rather than each card spinning up its own interval.
 export function PrCard({
   pr,
+  now,
   onTap,
   showRepo = true,
   active = false,
 }: {
   pr: Pr
+  now: number
   onTap: (pr: Pr) => void
   showRepo?: boolean
   active?: boolean
 }) {
-  const now = useNow()
   const timing = prTiming(pr, now)
   const rounds = roundCount(pr)
   return (

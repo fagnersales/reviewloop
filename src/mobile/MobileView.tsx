@@ -146,10 +146,18 @@ export function MobileView({ prs }: { prs: Pr[] }) {
   const [query, setQuery] = useState("")
   const [openOnly, setOpenOnly] = useOpenOnly()
 
+  const now = useNow()
+
   const selected = useMemo(
     () => (selectedKey ? prs.find((p) => p.key === selectedKey) ?? null : null),
     [prs, selectedKey],
   )
+  // Keep the outgoing PR rendered through the 300ms slide-out so the pane doesn't
+  // blank. Keyed by PR key at the call site, so a different PR remounts a fresh
+  // DetailScreen (no stale sheet/loop state bleeding across PRs).
+  const lastSelectedRef = useRef<Pr | null>(selected)
+  if (selected) lastSelectedRef.current = selected
+  const detailPr = selected ?? lastSelectedRef.current
 
   const repos = useMemo(
     () => Array.from(new Set(prs.map((p) => p.repo))).sort((a, b) => a.localeCompare(b)),
@@ -227,7 +235,13 @@ export function MobileView({ prs }: { prs: Pr[] }) {
             </div>
             <div className="space-y-2">
               {visible.map((pr) => (
-                <PrCard key={pr.key} pr={pr} onTap={(p) => setSelectedKey(p.key)} showRepo={activeRepo === "all"} />
+                <PrCard
+                  key={pr.key}
+                  pr={pr}
+                  now={now}
+                  onTap={(p) => setSelectedKey(p.key)}
+                  showRepo={activeRepo === "all"}
+                />
               ))}
               {visible.length === 0 && (
                 <div className="rounded-xl border border-dashed border-zinc-800 p-6 text-center text-xs text-zinc-500">
@@ -246,7 +260,7 @@ export function MobileView({ prs }: { prs: Pr[] }) {
           selected ? "translate-x-0" : "translate-x-full",
         )}
       >
-        {selected && <DetailScreen pr={selected} onBack={() => setSelectedKey(null)} />}
+        {detailPr && <DetailScreen key={detailPr.key} pr={detailPr} onBack={() => setSelectedKey(null)} />}
       </div>
     </div>
   )
