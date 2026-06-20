@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery } from "convex/react"
 import { type FunctionReturnType } from "convex/server"
 import Markdown from "markdown-to-jsx"
@@ -28,6 +28,7 @@ import { cn } from "./lib/cn"
 import { ago, longDur } from "./lib/format"
 
 type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
+type Pass = Pr["passes"][number]
 type AddResult = "added" | "exists" | "invalid"
 type EventKind = "opened" | "review" | "agent" | "commit" | "merged" | "failed" | "closed"
 
@@ -38,6 +39,11 @@ type TimelineEvent = {
   body: string
   time: number
   score?: number
+  // The review row this event derives from (review/agent/failed events), so a
+  // click can pull up that specific pass's summary — not just the latest one.
+  passId?: string
+  // The commit this event concerns (opened/commit/review events).
+  headSha?: string
 }
 
 function useIsNarrowViewport() {
@@ -191,6 +197,8 @@ function buildEvents(pr: Pr): TimelineEvent[] {
       title: "PR opened",
       body: `Opened by ${pr.author}.`,
       time: pr.prCreatedAt ?? first.queuedAt,
+      passId: first._id,
+      headSha: first.headSha,
     })
   }
 
@@ -203,6 +211,8 @@ function buildEvents(pr: Pr): TimelineEvent[] {
         title: "Commits landed",
         body: `New commit ${pass.headSha.slice(0, 7)} pushed.`,
         time: pass.queuedAt,
+        passId: pass._id,
+        headSha: pass.headSha,
       })
     }
     prevSha = pass.headSha
@@ -215,6 +225,8 @@ function buildEvents(pr: Pr): TimelineEvent[] {
         body: findingsLine(pass),
         time: pass.finishedAt ?? pass.queuedAt,
         score: pass.confidence,
+        passId: pass._id,
+        headSha: pass.headSha,
       })
     } else if (pass.status === "reviewing") {
       events.push({
@@ -223,6 +235,8 @@ function buildEvents(pr: Pr): TimelineEvent[] {
         title: "Agent is reviewing",
         body: pass.progress ?? "The agent is reviewing this commit.",
         time: pass.startedAt ?? pass.queuedAt,
+        passId: pass._id,
+        headSha: pass.headSha,
       })
     } else if (pass.status === "failed") {
       events.push({
@@ -231,6 +245,8 @@ function buildEvents(pr: Pr): TimelineEvent[] {
         title: "Review failed",
         body: pass.error ?? "The run errored or timed out.",
         time: pass.finishedAt ?? pass.queuedAt,
+        passId: pass._id,
+        headSha: pass.headSha,
       })
     } else {
       events.push({
@@ -239,6 +255,8 @@ function buildEvents(pr: Pr): TimelineEvent[] {
         title: "Queued for review",
         body: "Waiting for an available review worker.",
         time: pass.queuedAt,
+        passId: pass._id,
+        headSha: pass.headSha,
       })
     }
   }
@@ -268,6 +286,12 @@ function buildEvents(pr: Pr): TimelineEvent[] {
 
   return events
 }
+
+function githubCommitUrl(repo: string, sha: string) {
+  return `https://github.com/${repo}/commit/${sha}`
+}
+
+type Commit = NonNullable<Pass["commits"]>[number]
 
 function eventIcon(kind: EventKind): LucideIcon {
   switch (kind) {
@@ -575,26 +599,374 @@ function PrList({
   )
 }
 
-function Timeline({ events }: { events: TimelineEvent[] }) {
+// The review loop. Every step is a button: clicking it drives the detail panel
+// to the right (a review's summary, a commit's GitHub-style view, …). The rail
+// runs through the glyph centers; `-mx-2` lets the selected row's highlight bleed
+// past the content while the glyphs stay aligned to the rail.
+function Timeline({
+  events,
+  selectedId,
+  onSelect,
+}: {
+  events: TimelineEvent[]
+  selectedId: string | null
+  onSelect: (id: string) => void
+}) {
   const now = useNow()
   return (
-    <div className="relative space-y-4">
-      <div className="absolute bottom-4 left-3.5 top-4 w-px bg-zinc-800" />
-      {events.map((event) => (
-        <div key={event.id} className="relative flex gap-3">
-          <EventGlyph kind={event.kind} />
-          <div className="min-w-0 flex-1 pb-1">
-            <div className="flex min-w-0 items-center justify-between gap-2">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-sm font-medium text-zinc-100">{event.title}</span>
-                {event.score != null && <ScoreBadge score={event.score} />}
+    <div className="relative space-y-1">
+      <div className="absolute bottom-[1.375rem] left-3.5 top-[1.375rem] w-px bg-zinc-800" />
+      {events.map((event) => {
+        const selected = event.id === selectedId
+        return (
+          <button
+            key={event.id}
+            type="button"
+            onClick={() => onSelect(event.id)}
+            aria-pressed={selected}
+            className={cn(
+              "relative -mx-2 flex w-[calc(100%+1rem)] gap-3 rounded-md border px-2 py-2 text-left transition",
+              selected
+                ? "border-zinc-700 bg-zinc-900/80"
+                : "border-transparent hover:bg-zinc-900/40",
+            )}
+          >
+            <EventGlyph kind={event.kind} />
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-sm font-medium text-zinc-100">{event.title}</span>
+                  {event.score != null && <ScoreBadge score={event.score} />}
+                </div>
+                <span className="shrink-0 text-xs text-zinc-600">{ago(event.time, now)}</span>
               </div>
-              <span className="shrink-0 text-xs text-zinc-600">{ago(event.time, now)}</span>
+              <p className="mt-1 truncate text-xs leading-5 text-zinc-500">{event.body}</p>
             </div>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">{event.body}</p>
-          </div>
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+function PanelHeader({ icon: Icon, label, spin }: { icon: LucideIcon; label: string; spin?: boolean }) {
+  return (
+    <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+      <Icon className={cn("size-3.5", spin && "animate-spin")} />
+      {label}
+    </div>
+  )
+}
+
+function GitHubLink({ href, label }: { href: string; label: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
+    >
+      <ExternalLink className="size-3.5" />
+      {label}
+    </a>
+  )
+}
+
+// A hollow node on the commits rail — the GitHub commit-dot look.
+function CommitNode() {
+  return (
+    <span className="relative z-10 flex size-7 shrink-0 items-center justify-center">
+      <span className="flex size-3.5 items-center justify-center rounded-full border-2 border-zinc-600 bg-zinc-950">
+        <span className="size-1 rounded-full bg-zinc-500" />
+      </span>
+    </span>
+  )
+}
+
+function CommitAvatar({ url, author }: { url?: string; author: string }) {
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        className="size-5 shrink-0 rounded-full border border-zinc-800 bg-zinc-900"
+      />
+    )
+  }
+  return (
+    <span className="flex size-5 shrink-0 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 text-[9px] font-semibold uppercase text-zinc-400">
+      {author.slice(0, 1)}
+    </span>
+  )
+}
+
+// The LOC delta GitHub shows next to a commit: +additions in green, −deletions in red.
+function LocDelta({ additions, deletions }: { additions: number; deletions: number }) {
+  return (
+    <span className="shrink-0 font-mono tabular-nums">
+      <span className="text-emerald-400">+{additions}</span>{" "}
+      <span className="text-red-400">−{deletions}</span>
+    </span>
+  )
+}
+
+// The view a "Commits landed" step opens: the commits that landed in that push,
+// as GitHub lists them — a rail of nodes, the author avatar, the commit message
+// linking to GitHub, the author, the LOC delta, and the SHA. No review verdicts:
+// a review covers the whole push, not individual commits.
+function CommitsPanel({ pr, pass }: { pr: Pr; pass?: Pass }) {
+  const commits = pass?.commits ?? []
+  if (commits.length === 0) {
+    return (
+      <div>
+        <PanelHeader icon={GitCommit} label="Commits" />
+        <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/30 p-3 text-xs leading-5 text-zinc-500">
+          The commit list for this push hasn’t been captured yet.
+          {pass?.headSha && (
+            <>
+              {" "}
+              <a
+                href={githubCommitUrl(pr.repo, pass.headSha)}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-zinc-400 underline-offset-2 hover:text-zinc-200 hover:underline"
+              >
+                {pass.headSha.slice(0, 7)}
+              </a>{" "}
+              on GitHub.
+            </>
+          )}
         </div>
-      ))}
+      </div>
+    )
+  }
+  return (
+    <div>
+      <PanelHeader icon={GitCommit} label={`Commits · ${commits.length}`} />
+      <ol className="relative">
+        {commits.map((c: Commit, i) => {
+          const first = i === 0
+          const last = i === commits.length - 1
+          return (
+            <li key={c.sha} className="relative flex items-start gap-3 py-2">
+              {commits.length > 1 && (
+                // Per-row rail segment: rows wrap to varied heights, so a single
+                // fixed-height line can't connect the node dots — each row draws
+                // its own segment from/through its dot (top-trimmed on the first
+                // row, bottom-trimmed on the last).
+                <span
+                  className={cn(
+                    "absolute left-3.5 w-px bg-zinc-800",
+                    first ? "bottom-0 top-[1.375rem]" : last ? "top-0 h-[1.375rem]" : "inset-y-0",
+                  )}
+                />
+              )}
+              <CommitNode />
+              <CommitAvatar url={c.avatarUrl} author={c.author} />
+              <div className="min-w-0 flex-1">
+                <a
+                  href={githubCommitUrl(pr.repo, c.sha)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="block text-sm font-medium text-zinc-100 underline-offset-2 hover:text-sky-200 hover:underline"
+                >
+                  {c.message}
+                </a>
+                <p className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-zinc-500">
+                  <span className="truncate">{c.author}</span>
+                  <LocDelta additions={c.additions} deletions={c.deletions} />
+                  <a
+                    href={githubCommitUrl(pr.repo, c.sha)}
+                    target="_blank"
+                    rel="noreferrer"
+                    title="View commit on GitHub"
+                    className="shrink-0 font-mono text-zinc-500 underline-offset-2 transition hover:text-zinc-200 hover:underline"
+                  >
+                    {c.sha.slice(0, 7)}
+                  </a>
+                </p>
+              </div>
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}
+
+// A small "what is this step" card for the loop anchors (opened / merged / closed
+// / failed / in-flight) — the steps that aren't a full review or a commit list.
+function InfoCard({
+  tone,
+  icon,
+  title,
+  body,
+  spin,
+}: {
+  tone: string
+  icon: LucideIcon
+  title: string
+  body: string
+  spin?: boolean
+}) {
+  const Icon = icon
+  return (
+    <div className="flex items-start gap-3 rounded-md border border-zinc-800 bg-zinc-900/40 p-3">
+      <span className={cn("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md border", tone)}>
+        <Icon className={cn("size-3.5", spin && "animate-spin")} />
+      </span>
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-zinc-200">{title}</p>
+        <p className="mt-1 text-xs leading-5 text-zinc-500">{body}</p>
+      </div>
+    </div>
+  )
+}
+
+// The contextual detail panel: it renders whatever the selected review-loop step
+// is "about" — a review's summary, a commit's GitHub view, or a step info card.
+function EventDetail({
+  pr,
+  event,
+  passById,
+}: {
+  pr: Pr
+  event: TimelineEvent | null
+  passById: Map<string, Pass>
+}) {
+  const now = useNow()
+  if (!event) return null
+
+  if (event.kind === "commit") {
+    return <CommitsPanel pr={pr} pass={event.passId ? passById.get(event.passId) : undefined} />
+  }
+
+  if (event.kind === "review") {
+    const pass = event.passId ? passById.get(event.passId) : undefined
+    return (
+      <div>
+        <PanelHeader icon={Sparkles} label="Review summary" />
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <ScoreBadge score={pass?.confidence} />
+          <span className="rounded-md border border-zinc-800 bg-zinc-900/60 px-1.5 py-0.5 text-[11px] text-zinc-400">
+            {findingsLine(pass ?? {})}
+          </span>
+          {event.headSha && (
+            <a
+              href={githubCommitUrl(pr.repo, event.headSha)}
+              target="_blank"
+              rel="noreferrer"
+              title="View commit on GitHub"
+              className="inline-flex items-center gap-1 font-mono text-[11px] text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+            >
+              <GitCommit className="size-3" />
+              {event.headSha.slice(0, 7)}
+            </a>
+          )}
+        </div>
+        {pass?.report ? (
+          <ReviewReport report={pass.report} />
+        ) : (
+          <p className="text-sm leading-6 text-zinc-500">
+            No written summary was posted for this review.
+          </p>
+        )}
+        {pass?.reviewUrl && <GitHubLink href={pass.reviewUrl} label="View review on GitHub" />}
+      </div>
+    )
+  }
+
+  if (event.kind === "agent") {
+    const pass = event.passId ? passById.get(event.passId) : undefined
+    const reviewing = pass?.status === "reviewing"
+    return (
+      <div>
+        <PanelHeader
+          icon={reviewing ? Loader2 : Clock3}
+          label={reviewing ? "Reviewing" : "Queued"}
+          spin={reviewing}
+        />
+        <InfoCard
+          tone={
+            reviewing ? "border-sky-400/30 text-sky-300" : "border-zinc-700 text-zinc-400"
+          }
+          icon={reviewing ? Loader2 : Clock3}
+          title={reviewing ? "Agent is reviewing this commit" : "Queued for review"}
+          body={
+            reviewing
+              ? "The summary will appear here once the review is posted."
+              : "Waiting for an available review worker."
+          }
+          spin={reviewing}
+        />
+        {reviewing && pass?.progress && (
+          <p
+            title={pass.progress}
+            className="mt-3 truncate rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 font-mono text-[11px] text-zinc-400"
+          >
+            {pass.progress}
+          </p>
+        )}
+      </div>
+    )
+  }
+
+  if (event.kind === "failed") {
+    const pass = event.passId ? passById.get(event.passId) : undefined
+    return (
+      <div>
+        <PanelHeader icon={AlertTriangle} label="Review failed" />
+        <InfoCard
+          tone="border-red-400/30 text-red-300"
+          icon={AlertTriangle}
+          title="The review run didn’t complete"
+          body={pass?.error ?? event.body}
+        />
+      </div>
+    )
+  }
+
+  if (event.kind === "opened") {
+    // The opening push is a "Commits landed" with no SHA-change marker, so its
+    // commits are surfaced here — the only place they're reachable in the loop.
+    const pass = event.passId ? passById.get(event.passId) : undefined
+    return (
+      <div>
+        <PanelHeader icon={GitPullRequest} label="Pull request opened" />
+        <InfoCard
+          tone="border-zinc-700 text-zinc-400"
+          icon={GitPullRequest}
+          title={`Opened by ${pr.author}`}
+          body={`This review loop started ${ago(event.time, now)}.`}
+        />
+        <GitHubLink href={pr.prUrl} label="View pull request on GitHub" />
+        {pass?.commits && pass.commits.length > 0 && (
+          <div className="mt-5">
+            <CommitsPanel pr={pr} pass={pass} />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // merged | closed
+  const merged = event.kind === "merged"
+  return (
+    <div>
+      <PanelHeader icon={merged ? GitMerge : GitPullRequestClosed} label={merged ? "Merged" : "Closed"} />
+      <InfoCard
+        tone={merged ? "border-violet-400/30 text-violet-300" : "border-zinc-700 text-zinc-400"}
+        icon={merged ? GitMerge : GitPullRequestClosed}
+        title={merged ? "PR merged on GitHub" : "PR closed without merging"}
+        body={
+          merged
+            ? "No further review is needed for this pull request."
+            : "This pull request was closed without merging."
+        }
+      />
+      <GitHubLink href={pr.prUrl} label="View pull request on GitHub" />
     </div>
   )
 }
@@ -685,6 +1057,39 @@ function ReviewDetail({
   hasPrs: boolean
   isAll: boolean
 }) {
+  const events = useMemo(() => (pr ? buildEvents(pr) : []), [pr])
+  const passById = useMemo(
+    () => new Map<string, Pass>((pr?.passes ?? []).map((p) => [p._id, p])),
+    [pr],
+  )
+  // Default selection = the most recent review that has a summary, so opening a
+  // PR lands on its latest summary (matching the old always-latest behavior).
+  const defaultEventId = useMemo(() => {
+    const latestReview = [...events]
+      .reverse()
+      .find((e) => e.kind === "review" && passById.get(e.passId ?? "")?.report)
+    return latestReview?.id ?? events[events.length - 1]?.id ?? null
+  }, [events, passById])
+
+  const [selectedId, setSelectedId] = useState<string | null>(defaultEventId)
+  // Reset to the default only when the PR itself changes — keep the user's pick
+  // stable as live data streams into the same PR.
+  const prKey = pr?.key ?? null
+  const lastKeyRef = useRef(prKey)
+  useEffect(() => {
+    if (lastKeyRef.current !== prKey) {
+      lastKeyRef.current = prKey
+      setSelectedId(defaultEventId)
+    }
+  }, [prKey, defaultEventId])
+
+  // Opening a PR scrolls the review loop to its latest step.
+  const loopRef = useRef<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    const el = loopRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [prKey])
+
   if (!pr) {
     return (
       <section className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-5 text-sm text-zinc-500">
@@ -696,8 +1101,11 @@ function ReviewDetail({
       </section>
     )
   }
-  const events = buildEvents(pr)
   const latestReport = [...pr.passes].reverse().find((p) => p.report)
+  const selectedEvent =
+    events.find((e) => e.id === selectedId) ??
+    events.find((e) => e.id === defaultEventId) ??
+    null
   // With no report yet (the PR's first review), the whole detail body becomes
   // one centered status state; shape its icon/copy from the live status.
   const firstReviewError =
@@ -808,31 +1216,19 @@ function ReviewDetail({
               : "min-h-0 flex-1 grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] grid-rows-1",
           )}
         >
-          <div className={cn("p-4", !compact && "min-h-0 overflow-y-auto border-r border-zinc-800")}>
+          <div
+            ref={loopRef}
+            className={cn("p-4", !compact && "min-h-0 overflow-y-auto border-r border-zinc-800")}
+          >
             <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
               <Activity className="size-3.5" />
               Review loop
             </div>
-            <Timeline events={events} />
+            <Timeline events={events} selectedId={selectedEvent?.id ?? null} onSelect={setSelectedId} />
           </div>
 
           <div className={cn("p-4", compact ? "border-t border-zinc-800" : "min-h-0 overflow-y-auto")}>
-            <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
-              <Sparkles className="size-3.5" />
-              Summary
-            </div>
-            <ReviewReport report={latestReport.report} />
-            {latestReport.reviewUrl && (
-              <a
-                href={latestReport.reviewUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/40 px-2.5 py-1.5 text-xs text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
-              >
-                <ExternalLink className="size-3.5" />
-                View review on GitHub
-              </a>
-            )}
+            <EventDetail pr={pr} event={selectedEvent} passById={passById} />
           </div>
         </div>
       ) : (
