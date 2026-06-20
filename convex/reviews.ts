@@ -1,10 +1,36 @@
 import { v } from "convex/values"
 import { mutation, query, internalMutation } from "./_generated/server"
 import type { MutationCtx } from "./_generated/server"
-import type { Doc } from "./_generated/dataModel"
-import { commitInfo, reviewFields, reviewStatus } from "./schema"
+import type { Doc, Id } from "./_generated/dataModel"
+import { commitInfo, logKind, reviewFields, reviewStatus } from "./schema"
+import { MAX_WATCHED_REPOS } from "./repos"
 
 const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed worker
+
+// A fix-agent ack older than this with no fix pushed since = the agent stalled or
+// gave up. `clearStaleAcks` drops it so the PR flips back to "Awaiting agent" and
+// gets picked up again, instead of showing a forever-stale "In progress". Kept
+// generous: a false clear here causes duplicate pickup (worse than a slightly
+// stale badge), and a real review fix can legitimately take a while.
+const ACK_STALE_MS = 90 * 60 * 1000
+
+// Upper bound on how many log lines `reviewLog` returns, and how many a single
+// `clearReviewLog` sweep deletes in one mutation. A 25-min run at the worker's
+// ~1/s throttle stays well under this; the cap just keeps the read/write sizes
+// safe if the timeout is raised or a run is unusually chatty.
+const REVIEW_LOG_MAX = 2000
+
+// Delete a review's persisted progress lines (bounded). Used when a stale
+// "reviewing" row is requeued so the retry — which reuses the same `reviews`
+// row, hence the same `reviewId` — starts with a fresh log instead of
+// concatenating onto the crashed attempt's lines.
+async function clearReviewLog(ctx: MutationCtx, reviewId: Id<"reviews">) {
+  const prior = await ctx.db
+    .query("reviewLogLines")
+    .withIndex("by_review", (q) => q.eq("reviewId", reviewId))
+    .take(REVIEW_LOG_MAX)
+  for (const l of prior) await ctx.db.delete(l._id)
+}
 
 // Full row shape (system fields + columns) for query return validators.
 const reviewDoc = v.object({
@@ -46,10 +72,11 @@ async function doEnqueue(
   // reconcile (`enqueueMissing`) — funnel through here, so gating on `watchedRepos`
   // means a repo removed from the dashboard stops getting new reviews, and a repo
   // never added can't trigger an (unsandboxed) auto-clone-and-review at all. Repo
-  // slugs are case-insensitive, matched the same way as convex/repos.ts. The set is
-  // config-scale, so a single `.collect()` is bounded and acceptable.
+  // slugs are case-insensitive, matched the same way as convex/repos.ts. The watch
+  // list is capped at MAX_WATCHED_REPOS by `repos.add`, so `.take(...)` reads the
+  // whole set while keeping this gate read-bounded now that `add` is public.
   const target = a.repo.toLowerCase()
-  const watched = await ctx.db.query("watchedRepos").collect()
+  const watched = await ctx.db.query("watchedRepos").take(MAX_WATCHED_REPOS)
   if (!watched.some((r) => r.repo.toLowerCase() === target)) return "unwatched"
 
   const existing = await ctx.db
@@ -142,12 +169,25 @@ export const claim = mutation({
 
 // Worker streams a one-line "what the agent is doing right now". Ignored once
 // the row leaves "reviewing" so a late update can't resurrect stale text.
+//
+// Besides updating the single live `progress` line (kept for back-compat — the
+// board/header still read it), each call *appends* the line to `reviewLogLines`,
+// the durable, complete history the cloud-log console renders. Persisting
+// server-side means the full log survives a remount/reload and a viewer that
+// joins mid-review still sees every line, not just the tail observed since mount.
 export const updateProgress = mutation({
-  args: { id: v.id("reviews"), line: v.string() },
+  args: { id: v.id("reviews"), line: v.string(), kind: v.optional(logKind) },
   returns: v.null(),
-  handler: async (ctx, { id, line }) => {
+  handler: async (ctx, { id, line, kind }) => {
     const row = await ctx.db.get(id)
     if (!row || row.status !== "reviewing") return null
+    // Append to the durable log, but skip a plain line identical to the latest
+    // one (the worker throttle already dedups consecutive lines; a requeue/retry
+    // can re-emit the last line). A kinded line — e.g. the terminal "done" —
+    // always appends so severity markers are never swallowed.
+    if (kind !== undefined || line !== row.progress) {
+      await ctx.db.insert("reviewLogLines", { reviewId: id, ts: Date.now(), text: line, kind })
+    }
     await ctx.db.patch(id, { progress: line })
     return null
   },
@@ -178,6 +218,138 @@ export const finish = mutation({
       ...rest,
     })
     return null
+  },
+})
+
+// A fix agent acks (or, with `clear`, releases) a review pass — the entrypoint
+// behind the `prr-ack` CLI. Acking stamps the `reviewed` row so the console shows
+// "In progress" instead of "Awaiting agent"; it's the one fact the console can't
+// observe on its own (an agent has started but hasn't pushed a commit yet).
+//
+// Target resolution: with `headSha`, the row for that exact commit; without it,
+// the PR's *latest* pass — the one the board shows — so a concurrent re-push can't
+// make the ack land on a superseded reviewed row and silently no-op. Only a
+// `reviewed`, still-open pass is ackable — there's nothing to pick up on a
+// queued/reviewing/failed row or a merged/closed PR.
+export const ack = mutation({
+  args: {
+    repo: v.string(),
+    prNumber: v.number(),
+    headSha: v.optional(v.string()),
+    by: v.string(),
+    // release a prior ack (agent bailed) instead of recording one
+    clear: v.optional(v.boolean()),
+  },
+  returns: v.object({
+    ok: v.boolean(),
+    // why it didn't take, for the CLI to surface (absent on success)
+    reason: v.optional(v.string()),
+    headSha: v.optional(v.string()),
+    ackedAt: v.optional(v.number()),
+    ackedBy: v.optional(v.string()),
+  }),
+  handler: async (ctx, { repo, prNumber, headSha, by, clear }) => {
+    const rows = await ctx.db
+      .query("reviews")
+      .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
+      .collect()
+    if (rows.length === 0) return { ok: false, reason: "no review row for this PR" }
+
+    // Pick the pass to ack: the exact head SHA if given (preferring its reviewed
+    // row over a stale failed attempt), else the PR's *latest* pass.
+    //
+    // For the no-head case, "latest pass" (newest queuedAt across all statuses) is
+    // deliberately what the board surfaces (prs() reads latest.ackedAt) — NOT the
+    // newest *reviewed* pass. If a re-push raced in between await and ack, the
+    // newest reviewed row is already superseded; acking it would silently no-op on
+    // the board. Targeting the latest pass instead means the guard below reports
+    // "pass is reviewing, not reviewed" (the agent can name an older --head to ack
+    // a prior pass on purpose) rather than acking into the void.
+    let target
+    if (headSha) {
+      const forSha = rows.filter((r) => r.headSha === headSha)
+      if (forSha.length === 0)
+        return { ok: false, reason: `no review row for ${headSha.slice(0, 7)}` }
+      target =
+        forSha.find((r) => r.status === "reviewed") ??
+        forSha.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+    } else {
+      target = rows.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+    }
+
+    if (target.status !== "reviewed")
+      return {
+        ok: false,
+        reason: `pass is ${target.status}, not reviewed`,
+        headSha: target.headSha,
+      }
+    if (target.prState)
+      return { ok: false, reason: `PR is ${target.prState}`, headSha: target.headSha }
+
+    if (clear) {
+      await ctx.db.patch(target._id, { ackedAt: undefined, ackedBy: undefined })
+      return { ok: true, headSha: target.headSha }
+    }
+    const ackedAt = Date.now()
+    await ctx.db.patch(target._id, { ackedAt, ackedBy: by })
+    return { ok: true, headSha: target.headSha, ackedAt, ackedBy: by }
+  },
+})
+
+// Cron-driven honesty: a still-current reviewed pass whose ack has gone stale (the
+// agent acked but never pushed a fix — see ACK_STALE_MS) gets its ack dropped, so
+// the board reverts from "In progress" to "Awaiting agent" and the PR is picked up
+// again. Only the PR's *latest* pass is considered — an ack on a superseded pass is
+// a true historical record (the agent did push a fix), so it's left intact.
+export const clearStaleAcks = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    const now = Date.now()
+    // Reconstruct each PR's latest pass from bounded recent scans, mirroring prs().
+    const reviewing = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "reviewing"))
+      .order("desc")
+      .take(25)
+    const queued = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "queued"))
+      .order("desc")
+      .take(50)
+    const reviewed = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "reviewed"))
+      .order("desc")
+      .take(100)
+    const failed = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "failed"))
+      .order("desc")
+      .take(50)
+    const latest = new Map<string, Doc<"reviews">>()
+    for (const r of [...reviewing, ...queued, ...reviewed, ...failed]) {
+      const key = `${r.repo}#${r.prNumber}`
+      const cur = latest.get(key)
+      if (!cur || r.queuedAt > cur.queuedAt) latest.set(key, r)
+    }
+    let cleared = 0
+    for (const r of latest.values()) {
+      // A merged/closed PR can't be picked up again, so clearing its ack buys no
+      // honesty — it only erases the "Agent picked it up" history of real work.
+      // Skip it (matches the "superseded acks are kept" rule); only live reviewed
+      // passes can go stale.
+      if (
+        r.status === "reviewed" &&
+        r.prState == null &&
+        r.ackedAt != null &&
+        now - r.ackedAt > ACK_STALE_MS
+      ) {
+        await ctx.db.patch(r._id, { ackedAt: undefined, ackedBy: undefined })
+        cleared++
+      }
+    }
+    return cleared
   },
 })
 
@@ -231,6 +403,9 @@ export const requeueStale = internalMutation({
     let requeued = 0
     for (const r of reviewing) {
       if (now - (r.startedAt ?? r.queuedAt) > STALE_MS) {
+        // Drop the crashed attempt's log so the retry's lines don't concatenate
+        // onto it under the shared reviewId.
+        await clearReviewLog(ctx, r._id)
         await ctx.db.patch(r._id, {
           status: "queued",
           startedAt: undefined,
@@ -300,6 +475,38 @@ export const getByPrSha = query({
   },
 })
 
+// One persisted progress line, shaped to the client's CloudLogLine so the
+// cloud-log console can render the query result directly (no remap).
+const reviewLogLine = v.object({
+  id: v.string(),
+  text: v.string(),
+  at: v.number(),
+  kind: v.optional(logKind),
+})
+
+// The cloud-log console subscribes to this: the ordered progress log for one
+// review pass (the `reviews` row id), oldest first. Replaces the old client-side
+// `useProgressHistory` tail — every line the worker streamed is here, so a
+// viewer that opens mid-review (or remounts on PR reselect) sees the whole
+// session. A 25-min run at the worker's ~1/s throttle stays under the cap, so in
+// practice nothing is dropped; if a run *does* exceed it we keep the newest
+// lines (the live tail) rather than freezing the ticker on the run's start —
+// hence `order("desc")` then reverse back to chronological for display.
+export const reviewLog = query({
+  args: { reviewId: v.id("reviews") },
+  returns: v.array(reviewLogLine),
+  handler: async (ctx, { reviewId }) => {
+    const newestFirst = await ctx.db
+      .query("reviewLogLines")
+      .withIndex("by_review", (q) => q.eq("reviewId", reviewId))
+      .order("desc")
+      .take(REVIEW_LOG_MAX)
+    return newestFirst
+      .reverse()
+      .map((l) => ({ id: l._id, text: l.text, at: l.ts, kind: l.kind }))
+  },
+})
+
 // The dashboard subscribes to this: live board buckets.
 export const board = query({
   args: {},
@@ -355,6 +562,8 @@ const prPass = v.object({
   error: v.optional(v.string()),
   worker: v.optional(v.string()),
   commits: v.optional(v.array(commitInfo)),
+  ackedAt: v.optional(v.number()),
+  ackedBy: v.optional(v.string()),
 })
 
 // A PR = every review pass for one (repo, prNumber), with the latest pass's
@@ -374,6 +583,10 @@ const prDoc = v.object({
   p1: v.optional(v.number()),
   p2: v.optional(v.number()),
   progress: v.optional(v.string()),
+  // The latest pass's ack (a fix agent picked up its review). Drives the
+  // "Awaiting agent" vs "In progress" distinction on the list/header badge.
+  ackedAt: v.optional(v.number()),
+  ackedBy: v.optional(v.string()),
   updatedAt: v.number(),
   // GitHub lifecycle anchors for the list/header timing. Optional: a PR whose
   // rows predate timestamp capture has neither, and the client falls back to
@@ -442,6 +655,8 @@ export const prs = query({
         p1: latest.p1,
         p2: latest.p2,
         progress: latest.progress,
+        ackedAt: latest.ackedAt,
+        ackedBy: latest.ackedBy,
         updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.queuedAt,
         prCreatedAt,
         closedAt,
@@ -463,6 +678,8 @@ export const prs = query({
           error: r.error,
           worker: r.worker,
           commits: r.commits,
+          ackedAt: r.ackedAt,
+          ackedBy: r.ackedBy,
         })),
       })
     }

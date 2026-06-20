@@ -13,6 +13,16 @@ export const reviewStatus = v.union(
   v.literal("failed"),
 )
 
+// Semantic kind of a streamed review-log line — mirrors the client's
+// CloudLogKind ("info" | "done" | "warn" | "error"), driving the ticker's dot
+// colour/glyph. Optional on a line; absent reads as "info".
+export const logKind = v.union(
+  v.literal("info"),
+  v.literal("done"),
+  v.literal("warn"),
+  v.literal("error"),
+)
+
 // One commit in a PR push, captured by the worker from GitHub (the dashboard has
 // no GitHub auth of its own) — the commits that landed in a single review turn.
 export const commitInfo = v.object({
@@ -48,6 +58,16 @@ export const reviewFields = {
   closedAt: v.optional(v.number()),
   // PR lifecycle once GitHub closes it: merged, or closed-without-merging
   prState: v.optional(v.union(v.literal("merged"), v.literal("closed"))),
+  // A fix agent's acknowledgement that it has picked up THIS review pass and is
+  // working on the findings (stamped by `reviews.ack` / the `prr-ack` CLI). It's
+  // the difference the console can't otherwise know: a `reviewed` row with no ack
+  // is "Awaiting agent" (nobody's on it), one with an ack is "In progress". Set
+  // only on a `reviewed` row; cleared by `clearStaleAcks` when an ack goes stale
+  // (the agent never pushed a fix), so the board never shows a false "In progress".
+  //   ackedAt : when the agent acked (ms)
+  //   ackedBy : who acked — agent/host label, free-form (e.g. "claude@macbook")
+  ackedAt: v.optional(v.number()),
+  ackedBy: v.optional(v.string()),
   // results, filled by `finish`
   reviewUrl: v.optional(v.string()),
   confidence: v.optional(v.number()),
@@ -68,6 +88,22 @@ export default defineSchema({
     // dedup key: one review per (repo, PR, head SHA). A prefix lookup on
     // (repo, prNumber) finds every SHA of a PR (used by closePr).
     .index("by_pr_sha", ["repo", "prNumber", "headSha"]),
+
+  // The cloud-review session's progress log, one row per appended line. Lives in
+  // its own table (not an array on the review row) so it grows without rewriting
+  // the review doc or hitting the 1MB document cap — see the schema guideline on
+  // unbounded lists. `reviews.progress` still holds the *latest* line for
+  // back-compat; this table is the complete, durable history. Ordered by the
+  // by_review index, which returns a review's lines in insertion (_creationTime)
+  // order.
+  reviewLogLines: defineTable({
+    reviewId: v.id("reviews"),
+    // ms timestamp the append mutation stamped (Convex server time) — drives the
+    // ticker's clock column. Within ~the throttle interval of the worker's emit.
+    ts: v.number(),
+    text: v.string(),
+    kind: v.optional(logKind),
+  }).index("by_review", ["reviewId"]),
 
   // Append-only debug log of every webhook GitHub delivered, so wiring problems
   // ("did the event even arrive?") are visible without reading Convex logs.

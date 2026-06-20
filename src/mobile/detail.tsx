@@ -3,6 +3,7 @@
 // card). These mirror the desktop EventDetail / Timeline / CommitsPanel, tuned for
 // a single narrow column and touch targets.
 import { useMemo } from "react"
+import { useQuery } from "convex/react"
 import {
   AlertTriangle,
   Clock3,
@@ -11,13 +12,15 @@ import {
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
+  Hand,
   Loader2,
   type LucideIcon,
   Sparkles,
 } from "lucide-react"
+import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
 import { ago } from "../lib/format"
-import { CloudLogConsole, useProgressHistory } from "../components/cloud-log"
+import { CloudLogConsole } from "../components/cloud-log"
 import {
   type Commit,
   EventGlyph,
@@ -283,11 +286,27 @@ export function EventDetailContent({
           }
           spin={reviewing}
         />
-        {reviewing && (
+        {reviewing && pass && (
           <div className="mt-3">
-            <LiveReviewLog progress={pass?.progress} />
+            <LiveReviewLog reviewId={pass._id} />
           </div>
         )}
+      </div>
+    )
+  }
+
+  if (event.kind === "ack") {
+    const pass = event.passId ? passById.get(event.passId) : undefined
+    return (
+      <div>
+        <PanelHeader icon={Hand} label="Picked up by an agent" />
+        <InfoCard
+          tone="border-indigo-400/30 text-indigo-300"
+          icon={Hand}
+          title={`Acked by ${pass?.ackedBy ?? "an agent"}`}
+          body={`Picked up ${ago(event.time, now)} — an agent is working on the findings. Stays “In progress” until a fix is pushed (or the ack goes stale and it reverts to “Awaiting agent”).`}
+        />
+        {pass?.reviewUrl && <GitHubLink href={pass.reviewUrl} label="View review on GitHub" />}
       </div>
     )
   }
@@ -347,8 +366,11 @@ export function EventDetailContent({
   )
 }
 
-export function LiveReviewLog({ progress }: { progress?: string }) {
-  const lines = useProgressHistory(progress)
+// The cloud-review log for an in-flight pass. Subscribes to `reviewLog` — the
+// complete, server-persisted history the worker appends — so remounting on PR
+// reselect shows every line, not just the tail this tab observed since mount.
+export function LiveReviewLog({ reviewId }: { reviewId: Pass["_id"] }) {
+  const lines = useQuery(api.reviews.reviewLog, { reviewId }) ?? []
   if (lines.length === 0) return null
   return <CloudLogConsole lines={lines} streaming title="Cloud review" bodyClassName="h-[132px]" maxVisible={4} />
 }

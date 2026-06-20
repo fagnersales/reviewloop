@@ -9,6 +9,7 @@ import {
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
+  Hand,
   ListFilter,
   Loader2,
   type LucideIcon,
@@ -21,7 +22,7 @@ import {
 import { api } from "../convex/_generated/api"
 import { cn } from "./lib/cn"
 import { ago } from "./lib/format"
-import { CloudLogConsole, useProgressHistory } from "./components/cloud-log"
+import { CloudLogConsole } from "./components/cloud-log"
 import {
   type Commit,
   type Pass,
@@ -43,8 +44,7 @@ import {
 } from "./review/kit"
 import { MobileView } from "./mobile/MobileView"
 
-type AddResult = "added" | "exists" | "invalid"
-
+type AddResult = "added" | "exists" | "invalid" | "full"
 function RepoSegmented({
   repos,
   prs,
@@ -91,8 +91,12 @@ function RepoSegmented({
       setValue("")
       setError(null)
       setAdding(false)
+    } else if (result === "exists") {
+      setError("Already watched")
+    } else if (result === "full") {
+      setError("Watch list is full")
     } else {
-      setError(result === "exists" ? "Already watched" : "Use owner/name")
+      setError("Use owner/name")
     }
   }
 
@@ -558,11 +562,12 @@ function EventDetail({
           </p>
         )}
         {pass?.reviewUrl && <GitHubLink href={pass.reviewUrl} label="View review on GitHub" />}
+        {pass && <PassSessionLog reviewId={pass._id} />}
       </div>
     )
   }
 
-  if (event.kind === "agent" || event.kind === "queued") {
+  if (event.kind === "agent") {
     const pass = event.passId ? passById.get(event.passId) : undefined
     const reviewing = pass?.status === "reviewing"
     return (
@@ -585,14 +590,28 @@ function EventDetail({
           }
           spin={reviewing}
         />
-        {reviewing && pass?.progress && (
-          <p
-            title={pass.progress}
-            className="mt-3 truncate rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 font-mono text-[11px] text-zinc-400"
-          >
-            {pass.progress}
-          </p>
+        {/* During a re-review (a prior report already exists, so we're in the
+            two-column view) surface the same animated, full cloud-log here — not
+            just the single live line it used to show. */}
+        {reviewing && pass && (
+          <LiveReviewLog reviewId={pass._id} className="mt-3 w-full text-left" />
         )}
+      </div>
+    )
+  }
+
+  if (event.kind === "ack") {
+    const pass = event.passId ? passById.get(event.passId) : undefined
+    return (
+      <div>
+        <PanelHeader icon={Hand} label="Picked up by an agent" />
+        <InfoCard
+          tone="border-indigo-400/30 text-indigo-300"
+          icon={Hand}
+          title={`Acked by ${pass?.ackedBy ?? "an agent"}`}
+          body={`Picked up ${ago(event.time, now)} — an agent is working on the findings. Stays "In progress" until a fix is pushed (or the ack goes stale and it reverts to "Awaiting agent").`}
+        />
+        {pass?.reviewUrl && <GitHubLink href={pass.reviewUrl} label="View review on GitHub" />}
       </div>
     )
   }
@@ -608,6 +627,7 @@ function EventDetail({
           title="The review run didn’t complete"
           body={pass?.error ?? event.body}
         />
+        {pass && <PassSessionLog reviewId={pass._id} />}
       </div>
     )
   }
@@ -660,17 +680,40 @@ function EventDetail({
 // text until hovered, when they reveal their clickability.
 const META_LINK = "rounded-sm underline-offset-2 transition hover:text-zinc-200 hover:underline"
 
-// The live cloud-review log. The backend streams a single `progress` line per
-// `reviews` row; `useProgressHistory` accumulates the distinct values this client
-// observes into a history, which the ticker animates (last few lines, expandable
-// to the whole log). Keyed by PR + head SHA at the call site so each review pass
-// starts a fresh history.
-function LiveReviewLog({ progress }: { progress?: string }) {
-  const lines = useProgressHistory(progress)
+// The cloud-review log for an in-flight pass. Subscribes to `reviewLog` — the
+// complete, durable history the worker appended server-side — and feeds the
+// ticker, which animates the last few lines and expands to the whole log.
+// Because the lines are persisted (not a client-side tail), opening the
+// dashboard mid-review, or remounting on PR reselect, shows every line rather
+// than only what this tab observed since mount.
+function LiveReviewLog({
+  reviewId,
+  className = "mt-1 w-full max-w-md text-left",
+}: {
+  reviewId: Pass["_id"]
+  className?: string
+}) {
+  const lines = useQuery(api.reviews.reviewLog, { reviewId }) ?? []
   if (lines.length === 0) return null
   return (
-    <div className="mt-1 w-full max-w-md text-left">
+    <div className={className}>
       <CloudLogConsole lines={lines} streaming title="Cloud review" />
+    </div>
+  )
+}
+
+// The persisted log of a *finished* pass — the durable record that outlives the
+// live ticker. Rendered non-streaming, so every line shows its severity dot,
+// including the terminal green `done` / red `error` (the live ticker can't: its
+// newest line is always the blue active pulse, and it unmounts the moment the
+// pass leaves "reviewing"). Self-hides for passes with no persisted lines, e.g.
+// ones reviewed before this log existed.
+function PassSessionLog({ reviewId }: { reviewId: Pass["_id"] }) {
+  const lines = useQuery(api.reviews.reviewLog, { reviewId }) ?? []
+  if (lines.length === 0) return null
+  return (
+    <div className="mt-4">
+      <CloudLogConsole lines={lines} streaming={false} title="Session log" />
     </div>
   )
 }
@@ -744,6 +787,9 @@ function ReviewDetail({
     )
   }
   const latestReport = [...pr.passes].reverse().find((p) => p.report)
+  // The pass `claude -p /pr-review` is running right now (if any) — the source of
+  // the live cloud-log. When the PR is reviewing, it's the newest pass.
+  const reviewingPass = [...pr.passes].reverse().find((p) => p.status === "reviewing")
   const selectedEvent =
     events.find((e) => e.id === selectedId) ??
     events.find((e) => e.id === defaultEventId) ??
@@ -869,11 +915,11 @@ function ReviewDetail({
             <p className="text-sm font-medium text-zinc-200">{firstReview.title}</p>
             <p className="mx-auto max-w-[42ch] text-xs leading-5 text-zinc-500">{firstReview.body}</p>
           </div>
-          {pr.status === "reviewing" && (
+          {reviewingPass && (
             // The live cloud-review log `claude -p /pr-review` is producing right
             // now — the last lines, animated, expandable to the whole log. Keyed
             // per review pass so switching PRs / new commits start fresh.
-            <LiveReviewLog key={`${pr.key}:${pr.headSha}`} progress={pr.progress} />
+            <LiveReviewLog key={reviewingPass._id} reviewId={reviewingPass._id} />
           )}
         </div>
       )}
@@ -1074,12 +1120,10 @@ export default function App() {
 
   // Below the breakpoint the desktop two-pane layout can't breathe, so the app
   // hands off to a purpose-built mobile view (drill-down list → PR detail) rather
-  // than collapsing the panes into one long scroll.
+  // than collapsing the panes into one long scroll. h-dvh (not h-screen/100vh) so
+  // the bottom sheet isn't clipped behind a mobile browser's retracting toolbar.
   if (isNarrow) {
     return (
-      // h-dvh (dynamic viewport height), not h-screen/100vh: on mobile browsers
-      // 100vh is the *largest* viewport, so while the toolbar is showing it pushes
-      // the sheet's bottom-anchored handle behind it. h-dvh tracks the real height.
       <div className="flex h-dvh flex-col overflow-hidden bg-[#080809] text-zinc-100">
         {loading ? (
           <div className="flex flex-1 items-center justify-center gap-2 text-sm text-zinc-500">

@@ -159,7 +159,7 @@ Exit codes (so a caller can branch without parsing the JSON):
 | `2` | reviewed with blockers — `p0 \|\| p1 > 0`, **or** the counts were unparseable (`null`); either way, read the review |
 | `3` | failed (`error` in the JSON carries the reason) — last-observed state, not final |
 | `124` | timed out (prints last-known state) |
-| `1` | usage / connection error |
+| `1` | usage / connection error, or the repo isn't watched by prr-console (self-heal got `unwatched`) |
 
 Exit `3` is the *last-observed* state, not a final give-up: the worker's fallback
 reconcile (~`fallbackReconcileMin`, default 30 min) re-enqueues open PRs whose only
@@ -172,8 +172,61 @@ exit code (`124`) tells you it gave up. And if a PR is closed while its review i
 still `queued`, the row is removed and `await` blocks until `--timeout` (exit
 `124`) rather than exiting early.
 
-If no row appears within ~60s it warns once to stderr (worker down? webhook not
-wired for this repo?) and keeps waiting until `--timeout`.
+If no row appears within ~60s — the symptom of a dropped `synchronize` webhook
+delivery — `await` **self-heals**: it enqueues the review itself via the same
+idempotent `reviews.enqueueMissing` path the worker's reconcile uses, collapsing
+the recovery latency from up to the full fallback-reconcile interval (~30 min) to
+~60s. It only heals **open, non-draft** PRs — mirroring the webhook and reconcile,
+which both skip drafts/closed PRs — since for those "no row" is the expected state,
+not a dropped delivery (it keeps waiting instead). `doEnqueue` is idempotent, so
+this is safe even if a late webhook or the reconcile also fires (it returns
+`duplicate`). If the repo isn't watched, the
+self-heal enqueue reports `unwatched`; since no review will ever be queued,
+`await` says so explicitly and **gives up at once (exit 1)** rather than blocking
+out the full timeout — so an unwatched repo now surfaces in ~60s instead of as an
+ambiguous `124` after `--timeout`.
+
+## Acknowledging a review (`node worker/ack.mjs`)
+
+A posted review leaves the PR in one of two states the console can't tell apart on
+its own: **Awaiting agent** (reviewed, has blockers, nobody's on it) vs **In
+progress** (an agent has picked it up). The console can't observe the latter —
+an agent has started but hasn't pushed a commit yet — so the agent says so
+explicitly by **acking** the review.
+
+`worker/ack.mjs` is the companion to `await.mjs`: a fix agent runs it once it picks
+up a review it's about to fix. It stamps the `reviews` row (`ackedAt`/`ackedBy`),
+which flips the board badge from **Awaiting agent** to **In progress** and adds an
+"Agent picked it up" step to the review-loop timeline. Invoke it as
+`node worker/ack.mjs <pr>` (or `npm run ack -- <pr> …`); the installed bin alias is
+`prr-ack <pr>`. The natural pairing is **await → ack**:
+
+```bash
+prr-await <pr> --repo owner/name --head <sha>   # block until the review lands
+# … it came back with blockers (exit 2); you're going to fix them:
+prr-ack   <pr> --repo owner/name --head <sha>   # tell the board you're on it
+```
+
+```bash
+node worker/ack.mjs <pr> --repo owner/name
+# defaults: --repo from `gh repo view`; --head = the PR's latest pass when omitted;
+#           --by = $USER@$HOST. --clear releases a prior ack (you bailed).
+```
+
+It's one-shot: it calls the `reviews.ack` mutation and prints the result JSON to
+stdout. Only a still-open **reviewed** pass is ackable (nothing to pick up on a
+queued/reviewing/failed row or a merged/closed PR).
+
+| code | meaning |
+| --- | --- |
+| `0` | ack recorded (or, with `--clear`, released) |
+| `2` | nothing to ack — no reviewed pass for this PR/SHA yet, or the PR is merged/closed |
+| `1` | usage / connection error |
+
+The state is kept honest automatically: a `clearStaleAcks` cron drops an ack left
+on a still-current reviewed pass with no fix pushed within ~90 min, so an abandoned
+**In progress** reverts to **Awaiting agent**. An ack on a pass a later commit has
+already superseded is kept as history.
 
 ## Config (`worker/config.json`)
 

@@ -6,6 +6,7 @@ import { useEffect, useState } from "react"
 import { type FunctionReturnType } from "convex/server"
 import Markdown from "markdown-to-jsx"
 import {
+  Activity,
   AlertTriangle,
   CheckCircle2,
   Clock3,
@@ -13,6 +14,7 @@ import {
   GitMerge,
   GitPullRequest,
   GitPullRequestClosed,
+  Hand,
   Loader2,
   type LucideIcon,
   Rows3,
@@ -29,6 +31,7 @@ export type EventKind =
   | "opened"
   | "review"
   | "agent"
+  | "ack"
   | "queued"
   | "commit"
   | "merged"
@@ -158,12 +161,32 @@ export function statusDisplay(pr: Pr): StatusDisplay {
         icon: Clock3,
         tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400",
       }
-    case "reviewed":
+    case "reviewed": {
+      // A reviewed pass an agent has acked = real, trustworthy "someone's on it".
+      if (pr.ackedAt != null)
+        return {
+          label: "In progress",
+          icon: Activity,
+          tone: "border-indigo-400/25 bg-indigo-400/10 text-indigo-200",
+        }
+      // Reviewed with blockers — or counts the worker couldn't parse (null != 0)
+      // — and no ack = nobody's picked it up. The signal the console exists to
+      // surface: this branch needs an agent. Mirrors prr-await, which treats an
+      // unparseable count as a blocker so a parse miss never reads as "clean"
+      // (the safe direction: a legacy countless row shows "Awaiting agent").
+      if (pr.p0 == null || pr.p1 == null || pr.p0 > 0 || pr.p1 > 0)
+        return {
+          label: "Awaiting agent",
+          icon: Hand,
+          tone: "border-amber-400/25 bg-amber-400/10 text-amber-200",
+        }
+      // Clean review (no blockers) = ready to merge, nothing to pick up.
       return {
         label: "Reviewed",
         icon: CheckCircle2,
         tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
       }
+    }
     case "failed":
       return {
         label: "Failed",
@@ -192,6 +215,8 @@ export function eventIcon(kind: EventKind): LucideIcon {
       return Rows3
     case "agent":
       return Loader2
+    case "ack":
+      return Hand
     case "queued":
       return Clock3
     case "commit":
@@ -246,6 +271,19 @@ export function buildEvents(pr: Pr): TimelineEvent[] {
         passId: pass._id,
         headSha: pass.headSha,
       })
+      // An agent acked this review (via prr-ack) and is on the findings — the
+      // trustworthy "someone picked it up" the console can't otherwise know.
+      if (pass.ackedAt != null) {
+        events.push({
+          id: `${pass._id}-ack`,
+          kind: "ack",
+          title: "Agent picked it up",
+          body: `${pass.ackedBy ?? "An agent"} is working on the findings.`,
+          time: pass.ackedAt,
+          passId: pass._id,
+          headSha: pass.headSha,
+        })
+      }
     } else if (pass.status === "reviewing") {
       events.push({
         id: pass._id,
@@ -345,6 +383,7 @@ export function EventGlyph({ kind }: { kind: EventKind }) {
       className={cn(
         "relative z-10 flex size-7 shrink-0 items-center justify-center rounded-md border bg-zinc-950",
         kind === "agent" && "border-sky-400/30 text-sky-300",
+        kind === "ack" && "border-indigo-400/30 text-indigo-300",
         kind === "review" && "border-amber-400/30 text-amber-300",
         kind === "commit" && "border-violet-400/30 text-violet-300",
         kind === "merged" && "border-emerald-400/30 text-emerald-300",

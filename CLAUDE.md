@@ -29,12 +29,20 @@ to stdout and exits with a verdict code:
 
 - `0` reviewed, clean (no P0/P1) · `2` reviewed but has P0/P1 blockers (or the
   counts came back unparseable — read the review) · `3` failed (`error` in the
-  JSON has the reason) · `124` timeout · `1` usage/connection error.
+  JSON has the reason) · `124` timeout · `1` usage/connection error, or the repo
+  isn't watched by prr-console (self-heal got `unwatched`).
 
 Exit `3` (failed) is the *last-observed* state, not a final give-up: the worker's
 fallback reconcile (~30 min) re-enqueues open PRs whose only rows for the head SHA
 are `failed`, so if you treat exit `3` as retriable you can just re-run `await` to
 catch the next attempt.
+
+If a push's `synchronize` webhook is dropped, no review row is ever created. After
+a ~60s grace period `await` **self-heals** — it enqueues the review itself via the
+idempotent `reviews.enqueueMissing` path, so a missed delivery recovers in ~60s
+instead of waiting up to the full ~30-min reconcile interval. You don't need to do
+anything: keep blocking on `await` as usual. (If self-heal finds the repo isn't
+watched, it gives up at once with exit `1` rather than blocking until `--timeout`.)
 
 Read the JSON (`reviewUrl`, `p0`/`p1`/`p2`, `confidence`) and the exit code to
 decide what to do next. **Branch on the exit code, not the JSON `status`:** on
@@ -43,3 +51,22 @@ decide what to do next. **Branch on the exit code, not the JSON `status`:** on
 while its review is still `queued`, the row is removed and `await` blocks until
 `--timeout` (exit `124`) rather than exiting early. `--head <sha>` and `--repo`
 are auto-resolved from `gh` when omitted; `--timeout <seconds>` defaults to 1800.
+
+## Acknowledging a review you pick up (for Claude Code)
+
+When `await` returns a review with blockers (exit `2`) that **you are going to
+fix**, ACK it so the console stops showing **Awaiting agent** ("reviewed, nobody's
+on it") and shows **In progress** instead. The console can't know an agent has
+started until that agent pushes a commit — acking is how you tell it. Run:
+
+```bash
+node worker/ack.mjs <pr> --repo <owner/name> --head <sha>
+```
+
+(installed bin alias: `prr-ack <pr>`). It stamps the `reviews` row for that head
+SHA and exits: `0` acked · `2` nothing to ack (no reviewed pass yet, or the PR is
+merged/closed) · `1` usage/connection error. `--head` defaults to the PR's latest
+pass; `--repo` is auto-resolved from `gh`. When you bail on a PR you acked, release
+it with `--clear`. You don't need to ack a clean review (exit `0`) — there's
+nothing to pick up. The ack is dropped automatically (~90 min) if you ack but never
+push a fix, so the board reverts to **Awaiting agent** for someone else.
