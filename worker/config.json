@@ -1,19 +1,10 @@
 {
-  "//": "Worker config. convexUrl may be left empty — the worker falls back to VITE_CONVEX_URL in ../.env.local (written by `npx convex dev`). Override any field in config.local.json (gitignored) or via env (PRR_CONVEX_URL, CLAUDE_BIN).",
+  "//": "Worker config. convexUrl may be left empty — the worker falls back to VITE_CONVEX_URL in ../.env.local (written by `npx convex dev`). Override any field in config.local.json (gitignored) or via env (PRR_CONVEX_URL, CLAUDE_BIN, PRR_CLONE_DIR). The watch list is NOT here anymore — repos are managed in the dashboard (Convex `watchedRepos`); the worker subscribes to it. Each review clones the repo into a temp dir under cloneDir (default OS temp) and deletes it after, so no per-repo checkout is needed.",
   "convexUrl": "",
   "model": "opus",
   "concurrency": 3,
   "claudeBin": "claude",
   "reviewTimeoutMin": 25,
   "fallbackReconcileMin": 30,
-  "repos": [
-    {
-      "repo": "fagnersales/roblox-auto-delivery",
-      "workdir": "/Users/fagnersales/prototype/roblox-auto-delivery"
-    },
-    {
-      "repo": "fagnersales/prr-console",
-      "workdir": "/Users/fagnersales/prototype/prr-console"
-    }
-  ]
+  "cloneDir": ""
 }

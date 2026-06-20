@@ -60,8 +60,9 @@ export default defineSchema({
     receivedAt: v.number(),
   }).index("by_received", ["receivedAt"]),
 
-  // Repos this console is configured to review, published by the worker from
-  // worker/config.json so the dashboard can list them before any PR is reviewed.
+  // Repos this console reviews — the single source of truth for the watch list.
+  // Owned by the dashboard (convex/repos.ts add/remove); the worker subscribes to
+  // it (repos.list) and reconciles/reviews whatever is here. No worker config file.
   watchedRepos: defineTable({
     repo: v.string(),
     updatedAt: v.number(),
