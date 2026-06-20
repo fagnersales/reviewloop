@@ -9,3 +9,4 @@ worker/logs/
 *.tsbuildinfo
 .claude/worktrees/
 .playwright-mcp/
+.vercel
