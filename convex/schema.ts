@@ -28,6 +28,13 @@ export const reviewFields = {
   worker: v.optional(v.string()),
   // a one-line "what the agent is doing right now", streamed during reviewing
   progress: v.optional(v.string()),
+  // GitHub's own PR lifecycle timestamps (ms), the anchors for "time to merge"
+  // and "open for…". Optional because rows queued before this was added, and
+  // reconcile-discovered PRs that miss the value, fall back to queuedAt/updatedAt.
+  //   prCreatedAt : pull_request.created_at — when the PR was opened
+  //   closedAt    : pull_request.merged_at (merged) or closed_at (closed)
+  prCreatedAt: v.optional(v.number()),
+  closedAt: v.optional(v.number()),
   // PR lifecycle once GitHub closes it: merged, or closed-without-merging
   prState: v.optional(v.union(v.literal("merged"), v.literal("closed"))),
   // results, filled by `finish`

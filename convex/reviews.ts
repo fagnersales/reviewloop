@@ -21,6 +21,9 @@ const enqueueArgs = {
   title: v.string(),
   author: v.string(),
   prUrl: v.string(),
+  // GitHub's pull_request.created_at (ms). Optional: the worker reconcile passes
+  // it when available, but old callers / missing data just leave it unset.
+  prCreatedAt: v.optional(v.number()),
 }
 
 // Insert a queued review unless this exact head SHA already has a live row.
@@ -35,6 +38,7 @@ async function doEnqueue(
     title: string
     author: string
     prUrl: string
+    prCreatedAt?: number
   },
 ): Promise<"enqueued" | "duplicate" | "unwatched"> {
   // The watch list is authoritative for *what gets reviewed*, not just for the
@@ -94,9 +98,12 @@ export const setPrState = internalMutation({
     repo: v.string(),
     prNumber: v.number(),
     state: v.union(v.literal("merged"), v.literal("closed"), v.literal("open")),
+    // GitHub's merged_at/closed_at (ms) — the merge/close moment. Omitted on
+    // "open" (reopen), where we instead clear any stored closedAt.
+    at: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { repo, prNumber, state }) => {
+  handler: async (ctx, { repo, prNumber, state, at }) => {
     const rows = await ctx.db
       .query("reviews")
       .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
@@ -106,7 +113,11 @@ export const setPrState = internalMutation({
         await ctx.db.delete(r._id)
         continue
       }
-      await ctx.db.patch(r._id, { prState: state === "open" ? undefined : state })
+      await ctx.db.patch(r._id, {
+        prState: state === "open" ? undefined : state,
+        // stamp the close moment; a reopen wipes it so "open for…" resumes
+        closedAt: state === "open" ? undefined : at,
+      })
     }
     return null
   },
@@ -326,6 +337,11 @@ const prDoc = v.object({
   p2: v.optional(v.number()),
   progress: v.optional(v.string()),
   updatedAt: v.number(),
+  // GitHub lifecycle anchors for the list/header timing. Optional: a PR whose
+  // rows predate timestamp capture has neither, and the client falls back to
+  // the first pass's queuedAt / updatedAt.
+  prCreatedAt: v.optional(v.number()),
+  closedAt: v.optional(v.number()),
   passes: v.array(prPass),
 })
 
@@ -370,6 +386,9 @@ export const prs = query({
       rows.sort((a, b) => a.queuedAt - b.queuedAt)
       const latest = rows[rows.length - 1]
       const prState = rows.find((r) => r.prState)?.prState
+      // GitHub stamps every row of the PR identically, so the first non-null wins
+      const prCreatedAt = rows.find((r) => r.prCreatedAt != null)?.prCreatedAt
+      const closedAt = rows.find((r) => r.closedAt != null)?.closedAt
       result.push({
         key,
         repo: latest.repo,
@@ -386,6 +405,8 @@ export const prs = query({
         p2: latest.p2,
         progress: latest.progress,
         updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.queuedAt,
+        prCreatedAt,
+        closedAt,
         passes: rows.map((r) => ({
           _id: r._id,
           headSha: r.headSha,
