@@ -186,6 +186,41 @@ self-heal enqueue reports `unwatched`; since no review will ever be queued,
 out the full timeout — so an unwatched repo now surfaces in ~60s instead of as an
 ambiguous `124` after `--timeout`.
 
+## Ambient review-in-progress indicator (optional)
+
+A blocking `await` is invisible from the outside: the agent's turn ends but a
+background process is still waiting, so the pane looks idle when it isn't.
+`await.mjs` can drive an external indicator to fix that — entirely opt-in, and a
+clean no-op for anyone who doesn't want one (no cmux or anything else required).
+
+If `PRR_AWAIT_HOOK` (or `awaitHook` in config) names an executable, `await` calls
+it on two lifecycle edges:
+
+```
+<hook> start <waiterPid> <repo> <pr> <sha>   # when it begins blocking
+<hook> end   <exitCode>  <repo> <pr> <sha>   # when it exits (any graceful path)
+```
+
+The contract is deliberately generic — `await.mjs` knows nothing about the
+consumer. The **exit code carries the verdict** (`0` clean · `2` blockers · `3`
+failed · `124` timeout · `1` error), so the adapter decides how to present it. A
+failing or slow hook never affects the verdict (errors are swallowed, 3s cap).
+The `end` edge fires on every graceful exit (`settle` / timeout / `onQueryError` /
+SIGINT / SIGTERM); it does **not** fire on SIGKILL — `waiterPid` is handed to the
+consumer so it can reap a hard-killed waiter itself.
+
+Forkers wire up their own indicator (tmux statusline, desktop notification, Slack
+ping) by dropping a script and pointing `PRR_AWAIT_HOOK` at it. One is bundled:
+
+- **cmux** — `integrations/cmux-ring.sh` lights the review ring on the cmux pane:
+  orange while waiting, green on a clean pass, red on blockers, amber on a review
+  error, grey on timeout. It no-ops outside cmux. Enable it with
+  `export PRR_AWAIT_HOOK="$PWD/integrations/cmux-ring.sh"`. It self-targets the
+  workspace and the right cmux app instance via the `CMUX_WORKSPACE_ID` /
+  `CMUX_SOCKET_PATH` cmux injects into the pane (inherited by the background
+  waiter), so there's nothing else to configure; cmux's stale-PID sweep uses the
+  forwarded `waiterPid` to clear the ring if the waiter is SIGKILLed.
+
 ## Acknowledging a review (`node worker/ack.mjs`)
 
 A posted review leaves the PR in one of two states the console can't tell apart on
@@ -242,9 +277,10 @@ holds only host/runtime settings:
 | `reviewTimeoutMin` | kill a run after this many minutes (default 25) |
 | `fallbackReconcileMin` | slow `gh`-based safety reconcile; `0` to disable (default 30) |
 | `cloneDir` | where per-review throwaway clones go; empty = OS temp dir |
+| `awaitHook` | optional executable `await.mjs` runs on its start/end edges to drive an ambient indicator; empty = none (see [Ambient review-in-progress indicator](#ambient-review-in-progress-indicator-optional)) |
 
 Override any field in `worker/config.local.json` (gitignored), or via env
-(`PRR_CONVEX_URL`, `CLAUDE_BIN`, `PRR_CLONE_DIR`).
+(`PRR_CONVEX_URL`, `CLAUDE_BIN`, `PRR_CLONE_DIR`, `PRR_AWAIT_HOOK`).
 
 ### Managing watched repos
 

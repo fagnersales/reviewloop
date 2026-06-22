@@ -53,6 +53,27 @@ function envLocalUrl() {
 const cfg = loadConfig()
 const CONVEX_URL = process.env.PRR_CONVEX_URL || cfg.convexUrl || envLocalUrl()
 
+// Optional ambient "review in progress" indicator. If PRR_AWAIT_HOOK (or
+// cfg.awaitHook) names an executable, we invoke it on the two lifecycle edges:
+//   start <waiterPid> <repo> <pr> <sha>   — when we begin blocking
+//   end   <exitCode>  <repo> <pr> <sha>   — when we exit (any graceful path)
+// so a consumer (e.g. the bundled integrations/cmux-ring.sh, which lights a cmux
+// pane ring) can reflect the wait without await.mjs knowing anything about it.
+// The contract is generic: a tmux/notification/Slack adapter is the same shape.
+// No-op when unset; a failing or slow hook never affects the verdict. waiterPid
+// is our own pid, forwarded so a consumer can reap us if we're hard-killed
+// (SIGKILL skips the `end` edge).
+const HOOK = process.env.PRR_AWAIT_HOOK || cfg.awaitHook
+let hookStarted = false
+function fireHook(...args) {
+  if (!HOOK) return
+  try {
+    spawnSync(HOOK, args.map(String), { stdio: "ignore", timeout: 3000 })
+  } catch {
+    /* an ambient indicator must never break the wait */
+  }
+}
+
 // The query reference. `api` is `anyApi` (a Proxy), so this always resolves to
 // the `reviews:getByPrSha` reference regardless of codegen — whether the query
 // is actually *deployed* is decided at runtime and surfaced via onQueryError.
@@ -283,6 +304,11 @@ try {
   process.exit(1)
 }
 
+// Subscribed — we're now blocking. Signal "review in progress" (and pass our pid
+// so a consumer can clean up if we're SIGKILLed before the `end` edge fires).
+hookStarted = true
+fireHook("start", process.pid, repo, prNumber, headSha)
+
 // Self-heal guard: if no row appears within ~60s, the most likely cause is a
 // dropped `synchronize` webhook delivery (issue #9) — the push happened but no
 // review was ever queued. Rather than block until the worker's ~30-min fallback
@@ -411,3 +437,12 @@ async function shutdown() {
 }
 process.on("SIGINT", shutdown)
 process.on("SIGTERM", shutdown)
+
+// Fire the lifecycle "end" on every graceful exit (settle / timeout /
+// onQueryError / shutdown all reach here via process.exit, as does a natural
+// exit). The `exit` callback is sync-only, so spawnSync is the right tool. This
+// does NOT run on SIGKILL — a consumer that wants to cover a hard kill should
+// reap the waiterPid handed to it at `start`.
+process.on("exit", (code) => {
+  if (hookStarted) fireHook("end", code, repo, prNumber, headSha)
+})
