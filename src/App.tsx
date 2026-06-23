@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "convex/react"
 import {
   Activity,
   AlertTriangle,
+  Bot,
   Clock3,
   ExternalLink,
   GitCommit,
@@ -47,6 +48,7 @@ import { MobileView } from "./mobile/MobileView"
 import { useReadOnly } from "./read-only"
 import { SharePanel } from "./SharePanel"
 import { FollowUpsDesktop, FollowUpsMobile } from "./follow-ups/FollowUps"
+import { SolvesDesktop, SolvesMobile } from "./solves/Solves"
 
 type AddResult = "added" | "exists" | "invalid" | "full"
 function RepoSegmented({
@@ -1099,20 +1101,21 @@ function ReviewConsole({
   )
 }
 
-// ── top-level nav (Reviews ⇄ Follow-ups) ─────────────────────────────────────
-// The console is two views behind one chrome: the existing PR-review board and
-// the PR-follow-ups inbox. Desktop gets a slim left rail; below the narrow
-// breakpoint both collapse to a bottom tab bar (mobile-native).
-type View = "reviews" | "follow-ups"
+// ── top-level nav (Reviews ⇄ Follow-ups ⇄ Solves) ────────────────────────────
+// The console is three views behind one chrome: the PR-review board, the
+// PR-follow-ups inbox, and the autonomous-solver status. Desktop gets a slim left
+// rail; below the narrow breakpoint they collapse to a bottom tab bar (mobile-native).
+type View = "reviews" | "follow-ups" | "solves"
+const VIEWS: readonly View[] = ["reviews", "follow-ups", "solves"]
 const VIEW_KEY = "prr.view"
 
 // Remember the last view across reloads (a view preference, like useOpenOnly).
 function useView() {
-  const [view, setView] = useState<View>(() =>
-    typeof window !== "undefined" && window.localStorage.getItem(VIEW_KEY) === "follow-ups"
-      ? "follow-ups"
-      : "reviews",
-  )
+  const [view, setView] = useState<View>(() => {
+    if (typeof window === "undefined") return "reviews"
+    const stored = window.localStorage.getItem(VIEW_KEY)
+    return (VIEWS as readonly string[]).includes(stored ?? "") ? (stored as View) : "reviews"
+  })
   useEffect(() => {
     if (typeof window !== "undefined") window.localStorage.setItem(VIEW_KEY, view)
   }, [view])
@@ -1213,6 +1216,9 @@ export default function App() {
   // The pending-decision count drives the Follow-ups nav badge. A tiny dedicated
   // query so the Reviews view shows it without loading the whole inbox.
   const pending = useQuery(api.suggestedIssues.pendingCount) ?? 0
+  // In-flight solves (queued + building) drive the Solves nav badge — same
+  // lightweight-count pattern.
+  const solving = useQuery(api.solveTasks.activeCount) ?? 0
 
   // Clearing the stale remove banner on any deliberate navigation/add keeps a
   // failed-remove message from outliving its relevance across unrelated actions.
@@ -1284,6 +1290,8 @@ export default function App() {
         <div className="relative flex min-h-0 flex-1 flex-col">
           {view === "follow-ups" ? (
             <FollowUpsMobile />
+          ) : view === "solves" ? (
+            <SolvesMobile />
           ) : loading ? (
             <div className="flex flex-1 items-center justify-center gap-2 text-sm text-zinc-500">
               <Loader2 className="size-4 animate-spin" />
@@ -1301,6 +1309,13 @@ export default function App() {
             icon={Inbox}
             label="Follow-ups"
             count={pending}
+          />
+          <BottomTab
+            active={view === "solves"}
+            onClick={() => setView("solves")}
+            icon={Bot}
+            label="Solves"
+            count={solving}
           />
         </nav>
       </div>
@@ -1322,13 +1337,24 @@ export default function App() {
           label="Follow-ups"
           count={pending}
         />
+        <RailBtn
+          active={view === "solves"}
+          onClick={() => setView("solves")}
+          icon={Bot}
+          label="Solves"
+          count={solving}
+        />
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-zinc-800/80 bg-[#080809]/95 px-4 py-3 backdrop-blur">
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold text-zinc-100">
-              {view === "follow-ups" ? "PR Follow-ups" : "PR Review Console"}
+              {view === "follow-ups"
+                ? "PR Follow-ups"
+                : view === "solves"
+                  ? "Autonomous Solves"
+                  : "PR Review Console"}
             </div>
             {view === "reviews" && (
               <div className="truncate text-xs text-zinc-600">Claude Code and Codex review loops</div>
@@ -1342,6 +1368,8 @@ export default function App() {
         <main className="flex min-h-0 flex-1 flex-col">
           {view === "follow-ups" ? (
             <FollowUpsDesktop />
+          ) : view === "solves" ? (
+            <SolvesDesktop />
           ) : loading ? (
             <div className="flex min-h-[60vh] flex-1 items-center justify-center gap-2 text-sm text-zinc-500">
               <Loader2 className="size-4 animate-spin" />

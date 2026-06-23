@@ -302,9 +302,27 @@ export const getByRepoIssue = query({
   },
 })
 
-// The dashboard (a future "Solves" view) subscribes to this: live board buckets,
-// mirroring reviews.board. Provided now so the loop is observable from the Convex
-// client without a UI, and a view is a small follow-on.
+// The Solves nav badge subscribes to this: how many solves are in flight (queued
+// or building) right now. Cheap — a bounded read per active status, mirroring
+// suggestedIssues.pendingCount, so the other views show it without loading the board.
+export const activeCount = query({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    const solving = await ctx.db
+      .query("solveTasks")
+      .withIndex("by_status", (q) => q.eq("status", "solving"))
+      .take(50)
+    const queued = await ctx.db
+      .query("solveTasks")
+      .withIndex("by_status", (q) => q.eq("status", "queued"))
+      .take(50)
+    return solving.length + queued.length
+  },
+})
+
+// The dashboard "Solves" view subscribes to this: live board buckets, mirroring
+// reviews.board. The view flattens these into one activity-ordered list.
 export const board = query({
   args: {},
   returns: v.object({
