@@ -29,11 +29,16 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
 ## Layout
 
 - `convex/` — backend. `schema.ts`, `http.ts` (`/github/webhook`, `/health`),
-  `reviews.ts` (enqueue/claim/finish/board/…), `controls.ts` (rescan), `crons.ts`
-  (requeue crashed runs).
-- `worker/index.mjs` — the long-lived subscriber that runs reviews. The watch
+  `reviews.ts` (enqueue/claim/finish/board/…), `suggestedIssues.ts` (the
+  PR-follow-ups inbox), `solveTasks.ts` (the autonomous solver queue),
+  `controls.ts` (rescan), `crons.ts` (requeue crashed runs).
+- `worker/index.mjs` — the long-lived subscriber that runs **reviews**. The watch
   list lives in Convex (managed from the dashboard); `worker/config.json` holds
   only host settings (model, concurrency, clone dir).
+- `worker/solver.mjs` — a separate long-lived subscriber that runs **solves**:
+  spawns `/pr-feature` against a configured checkout to build a `ready-for-agent`
+  issue and open a PR. Its checkout registry is `worker/solver.config.json`
+  (host-specific, gitignored). See [The autonomous solver](#the-autonomous-solver-issue--pr).
 - `src/` — the dashboard.
 
 ## One-time setup
@@ -101,6 +106,108 @@ tail -f worker/worker.out          # worker log; per-PR run logs in worker/logs/
 For auto-start on login/reboot, wrap it in a launchd agent (not set up by
 default — mirrors how the locator is run manually).
 
+## The autonomous solver (issue → PR)
+
+The review worker reviews PRs. The **solver** worker (`worker/solver.mjs`) closes
+the loop the other way: when a GitHub issue carries the **`ready-for-agent`** label,
+it spawns an autonomous `claude -p "/pr-feature …"` run that **builds the feature
+and opens a PR** (`Closes #N`). That PR is then reviewed by the review half *for
+free*, auto-fixed for a few rounds, and **left for a human to merge** — the solver
+**never merges**.
+
+```
+issue labelled ready-for-agent ──issues webhook / reconcile──▶ solveTasks (Convex)
+        │ solver subscribes, claims
+        ▼
+  worker/solver.mjs ──spawns──▶ claude -p "/pr-feature solve #N"  (cwd = configured checkout)
+        │                            │ EnterWorktree → build → open PR (Closes #N)
+        │                            │ → prr-await loop → auto-fix N rounds → STOP
+        ▼                            ▼
+  mark task pr-opened          PR reviewed for FREE by the review half
+  (records PR # for lineage)   (pull_request webhook → reviews table → review worker)
+        │
+        ▼  (human merges — solver NEVER merges; the merge webhook flips the task → done)
+```
+
+The elegance: the solver does **not** reimplement build/review/fix. The global
+`pr-feature` skill already does all of it (worktree → build → open PR → `prr-await`
+loop → auto-fix → stop clean). The solver just: find a ready-for-agent issue → claim
+→ spawn `pr-feature` in the right folder → capture the PR → clean up.
+
+**Why a separate process + a local checkout (not the review worker's throwaway
+clone):** *building* needs what git does not carry — `.env.local` (secrets, the live
+backend URL), `node_modules`, build caches — so a solve must run in a **real,
+configured local checkout**. Paths are host-specific, so the repo→checkout registry
+is local config (`worker/solver.config.json`), never Convex. A long solve (tens of
+minutes to hours) also gets its own process so it never starves the fast reviews.
+
+### Two human gates protect the cascade
+
+Nothing auto-builds without two deliberate human decisions upstream: a human **opens**
+an agent-proposed follow-up (or files an issue by hand), then **promotes** it to
+`ready-for-agent`. Only then does the solver act. The label is the single trigger —
+so manually-triaged issues work too, not just agent-proposed ones.
+
+### Setup
+
+1. **Enable the `Issues` event** on the repo webhook (the one-time webhook in
+   step 3 only subscribed to *Pull requests*). Add `-f 'events[]=issues'` when
+   creating it, or tick **Issues** in repo Settings ▸ Webhooks. *Optional* — the
+   solver's reconcile (`gh issue list --label ready-for-agent`) catches labels even
+   without the webhook; the webhook just makes it instant.
+
+2. **Register a checkout per solvable repo.** Copy the template and fill in the
+   map (paths are host-specific, so the file is gitignored):
+
+   ```bash
+   cp worker/solver.config.example.json worker/solver.config.json
+   ```
+
+   Use **dedicated, solver-owned** checkouts — not your personal clones. The
+   `pr-feature` worktree symlinks `node_modules` back to the parent, so a solve that
+   runs `npm install` would mutate *your* deps, and stale worktrees would litter a
+   repo you actively use. One-time per repo:
+
+   ```bash
+   gh repo clone <owner/name> ~/solver-checkouts/<name>
+   cd ~/solver-checkouts/<name> && npm install && cp <your-clone>/.env.local .env.local
+   ```
+
+   Then add `"owner/name": "~/solver-checkouts/<name>"` under `checkouts`. A
+   `ready-for-agent` issue on a **watched** repo with **no** registered checkout is
+   claimed and **failed with a clear reason** (never silently stalled) — two gates:
+   Convex `watchedRepos` = "in the system", the checkout registry = "solvable on
+   this host".
+
+3. **Run it** (a separate process from the review worker):
+
+   ```bash
+   npm run solver
+   # or background: nohup node worker/solver.mjs >> worker/solver.out 2>&1 < /dev/null &
+   ```
+
+   At startup it validates every configured checkout (path exists, is a git repo,
+   `origin` matches the mapped slug; warns on missing `.env.local`/`node_modules`)
+   and sweeps any stale `solve/issue-*` worktrees a crash left behind.
+
+### Config (`worker/solver.config.json`)
+
+| key | meaning |
+| --- | --- |
+| `checkouts` | **the registry** — `{ "owner/name": "/path" }`; `~` expands, slugs match case-insensitively |
+| `convexUrl` | deployment URL; empty = read `VITE_CONVEX_URL` from `.env.local` |
+| `model` | model for the `claude -p` solve (default `opus`) |
+| `concurrency` | max simultaneous solves (default **1** — serial; building concurrently risks port/`npm install` collisions) |
+| `solveTimeoutMin` | kill a solve after this many minutes (default 180 — it covers the whole build + internal review/auto-fix loop) |
+| `maxFixRounds` | cap the internal auto-fix rounds (default 3) before stopping with the PR open |
+| `fallbackReconcileMin` | slow `gh issue list` safety reconcile; `0` to disable (default 20) |
+
+Override the checkout map via the `PRR_SOLVER_CHECKOUTS` env var (JSON); other env:
+`PRR_CONVEX_URL`, `CLAUDE_BIN`. The solve task lifecycle is
+`queued → solving → pr-opened → done | failed` (the `pull_request` merge webhook
+flips `pr-opened → done`, closing the issue → solve → PR lineage). Every autonomous
+spawn sets `PRR_UNATTENDED=1`, the contract that tells `pr-feature` it's headless.
+
 ## Verify end-to-end
 
 - `GET $SITE_URL/health` → `{ "ok": true }`.
@@ -111,6 +218,12 @@ default — mirrors how the locator is run manually).
   head SHA).
 - Kill the worker mid-review → the `requeue stale reviews` cron flips it back to
   `queued` after ~25 min; restart → it re-claims.
+- **Solver:** with `npm run solver` running and a checkout registered for a watched
+  repo, label a throwaway issue `ready-for-agent`. Within seconds the solve goes
+  **queued → solving**; the agent opens a PR (`Closes #N`) which the review half then
+  picks up, and the task reaches **pr-opened** with the PR number recorded. Merge that
+  PR → the `pull_request` webhook flips the task to **done**. (No checkout for the
+  repo → the task fails fast with `no solver checkout registered…`.)
 
 ## Waiting for a review (`node worker/await.mjs`)
 

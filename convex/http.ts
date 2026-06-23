@@ -85,6 +85,54 @@ http.route({
       return json({ error: "body must be JSON" }, 400)
     }
 
+    // ── issues event: the autonomous solver's trigger ────────────────────────
+    // A `ready-for-agent` label landing on an open issue enqueues a solve (the
+    // worker spawns `/pr-feature` to build it and open a PR). Removing the label or
+    // closing the issue cancels a still-queued solve. Gate on the real GitHub label
+    // so manually-triaged issues work too, not just agent-proposed ones. (The
+    // `issues` event must be enabled on the repo webhook — the reconcile fallback
+    // covers it if not.)
+    if (event === "issues") {
+      const action: string = body.action ?? ""
+      const issue = body.issue ?? {}
+      const repo: string = body.repository?.full_name ?? ""
+      const issueNumber: number = issue.number
+      const labelName: string = body.label?.name ?? ""
+      const READY = "ready-for-agent"
+
+      // `issues` fires only for issues, never PRs, but guard defensively anyway.
+      if (issue.pull_request) {
+        await ctx.runMutation(internal.reviews.recordDelivery, {
+          deliveryId, event, action, outcome: "ignored",
+        })
+        return json({ ok: true })
+      }
+
+      let outcome = "ignored"
+      if (action === "labeled" && labelName === READY && issue.state === "open") {
+        outcome = await ctx.runMutation(internal.solveTasks.enqueue, {
+          repo,
+          issueNumber,
+          issueTitle: issue.title ?? "",
+          issueUrl: issue.html_url ?? "",
+        })
+      } else if (
+        (action === "unlabeled" && labelName === READY) ||
+        action === "closed" ||
+        action === "deleted"
+      ) {
+        const n = await ctx.runMutation(internal.solveTasks.cancelQueued, {
+          repo,
+          issueNumber,
+        })
+        outcome = n > 0 ? "cancelled" : "ignored"
+      }
+      await ctx.runMutation(internal.reviews.recordDelivery, {
+        deliveryId, event, action, outcome,
+      })
+      return json({ ok: true, outcome })
+    }
+
     if (event !== "pull_request") {
       await ctx.runMutation(internal.reviews.recordDelivery, {
         deliveryId,
@@ -107,6 +155,12 @@ http.route({
         state,
         at: isoMs(pr.merged_at) ?? isoMs(pr.closed_at),
       })
+      // If this PR was opened by a solver for a tracked issue, a *merge* closes the
+      // loop: flip that solve task to `done`. A close-without-merge is left alone
+      // (the human declined the PR — not the solver's failure to record).
+      if (pr.merged === true) {
+        await ctx.runMutation(internal.solveTasks.markMerged, { repo, prNumber })
+      }
       await ctx.runMutation(internal.reviews.recordDelivery, {
         deliveryId,
         event,

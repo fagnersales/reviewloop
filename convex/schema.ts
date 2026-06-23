@@ -109,6 +109,58 @@ export const suggestedIssueFields = {
   error: v.optional(v.string()),
 }
 
+// ── autonomous solver (issue → PR) ───────────────────────────────────────────
+// A `solveTasks` row is the third half of the loop: when a GitHub issue carries
+// the `ready-for-agent` label (set by the follow-ups gate 2, or manually via the
+// triage skill), the solver worker spawns an autonomous `/pr-feature` run that
+// builds the feature and opens a PR (`Closes #N`). That PR is then reviewed by the
+// existing review half for free. The solver NEVER merges — a human does. Lifecycle:
+//   queued    : a webhook (`issues:labeled`) or the reconcile saw a ready-for-agent
+//               issue with no live solve yet
+//   solving   : the solver claimed it and `claude -p /pr-feature` is running
+//   pr-opened : the run finished and the solver located the PR it opened (prNumber
+//               set) — the success terminus from the solver's point of view
+//   done      : that PR was merged by a human (stamped from the pull_request webhook
+//               via markMerged) — closes the issue → solve → PR lineage
+//   failed    : the run errored, timed out, opened no PR, or no checkout is
+//               registered for the repo on this host
+export const solveStatus = v.union(
+  v.literal("queued"),
+  v.literal("solving"),
+  v.literal("pr-opened"),
+  v.literal("done"),
+  v.literal("failed"),
+)
+
+// The non-system columns of a `solveTasks` row — reused by query return validators.
+export const solveTaskFields = {
+  repo: v.string(), // "owner/name"
+  issueNumber: v.number(),
+  issueTitle: v.string(),
+  issueUrl: v.string(),
+  status: solveStatus,
+  queuedAt: v.number(),
+  startedAt: v.optional(v.number()),
+  finishedAt: v.optional(v.number()),
+  worker: v.optional(v.string()),
+  // a one-line "what the agent is doing right now", streamed during solving
+  progress: v.optional(v.string()),
+  // the worker-assigned branch the pr-feature agent built on. The worker names it
+  // (solve/issue-<N>-<slug>) so it can locate the opened PR by head branch after
+  // the run, and clean up the local worktree/branch afterward.
+  branch: v.optional(v.string()),
+  // the PR the solver opened — the issue → solve → PR lineage anchor. Set on
+  // pr-opened; the by_pr index lets the pull_request webhook flip this row to
+  // `done` when that PR merges.
+  prNumber: v.optional(v.number()),
+  prUrl: v.optional(v.string()),
+  // worker-loop safety: bounded retries + last error for a failed solve, so a
+  // persistently failing issue surfaces its reason instead of being retried forever
+  // (mirrors reviews' failed-row retry + suggestedIssues' attempts cap).
+  attempts: v.optional(v.number()),
+  error: v.optional(v.string()),
+}
+
 // One commit in a PR push, captured by the worker from GitHub (the dashboard has
 // no GitHub auth of its own) — the commits that landed in a single review turn.
 export const commitInfo = v.object({
@@ -198,7 +250,7 @@ export default defineSchema({
     event: v.string(),
     action: v.optional(v.string()),
     prNumber: v.optional(v.number()),
-    outcome: v.string(), // enqueued | duplicate | unwatched | ignored | closed | bad-signature
+    outcome: v.string(), // enqueued | duplicate | unwatched | ignored | cancelled | closed | merged | bad-signature
     receivedAt: v.number(),
   }).index("by_received", ["receivedAt"]),
 
@@ -218,4 +270,15 @@ export default defineSchema({
     .index("by_source_pr", ["repo", "sourcePrNumber"])
     // idempotency: the `suggest` mutation collapses a re-proposal onto its row
     .index("by_dedup", ["dedupKey"]),
+
+  // Autonomous solve tasks — see solveTaskFields.
+  solveTasks: defineTable(solveTaskFields)
+    // worker subscription + board, newest-first within a status
+    .index("by_status", ["status", "queuedAt"])
+    // dedup/idempotency + lookup: one live solve per (repo, issueNumber)
+    .index("by_repo_issue", ["repo", "issueNumber"])
+    // lineage: find the solve that opened a given PR, so the pull_request webhook
+    // can flip it to `done` on merge. prNumber is set only once a PR is opened;
+    // rows without it index as undefined and are simply never matched here.
+    .index("by_pr", ["repo", "prNumber"]),
 })

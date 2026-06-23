@@ -4,8 +4,11 @@ dist
 .DS_Store
 *.swp
 worker/config.local.json
+worker/solver.config.json
 worker/worker.out
 worker/worker.pid
+worker/solver.out
+worker/solver.pid
 worker/logs/
 *.tsbuildinfo
 .claude/worktrees/

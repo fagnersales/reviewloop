@@ -22,4 +22,15 @@ crons.interval(
   {},
 )
 
+// Crash recovery for the solver: requeue any solve whose worker died mid-run (see
+// STALE_MS in solveTasks.ts). Solves run for tens of minutes to hours, so this
+// fires on a long interval and the STALE bound is generous — the common path is
+// webhook/reconcile-driven; this only catches a crashed solver.
+crons.interval(
+  "requeue stale solves",
+  { minutes: 15 },
+  internal.solveTasks.requeueStale,
+  {},
+)
+
 export default crons

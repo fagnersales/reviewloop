@@ -10,6 +10,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "worker": "node worker/index.mjs",
+    "solver": "node worker/solver.mjs",
     "await": "node worker/await.mjs",
     "ack": "node worker/ack.mjs",
     "suggest": "node worker/suggest.mjs"

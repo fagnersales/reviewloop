@@ -70,3 +70,29 @@ pass; `--repo` is auto-resolved from `gh`. When you bail on a PR you acked, rele
 it with `--clear`. You don't need to ack a clean review (exit `0`) — there's
 nothing to pick up. The ack is dropped automatically (~90 min) if you ack but never
 push a fix, so the board reverts to **Awaiting agent** for someone else.
+
+## The autonomous solver (`worker/solver.mjs`)
+
+The third worker in this repo (beside the review worker and the await/ack CLIs).
+It closes the loop: a GitHub issue labelled **`ready-for-agent`** → the solver
+spawns `claude -p "/pr-feature …"` against a **registered local checkout** (it needs
+the gitignored `.env.local`/`node_modules` a build requires — a throwaway clone
+won't do) → the agent builds it, opens a PR (`Closes #N`), runs its own `prr-await`
+auto-fix loop, and **stops**. The opened PR is then reviewed by the review half for
+free. **The solver never merges** — a human does; the `pull_request` merge webhook
+flips the solve task `pr-opened → done`.
+
+Operator/agent notes if you touch this:
+- The checkout registry is **host-specific local config** (`worker/solver.config.json`,
+  gitignored — template: `worker/solver.config.example.json`), **not** Convex. A
+  watched repo with no registered checkout has its solve **failed fast** with a clear
+  reason, never silently stalled.
+- Every autonomous spawn sets **`PRR_UNATTENDED=1`** (the contract that tells
+  `pr-feature` it's headless — flush follow-ups via `prr-suggest`, skip human
+  chatter) and assigns a deterministic branch `solve/issue-<N>-<slug>` so the worker
+  can locate the opened PR and clean up the local worktree afterward.
+- Run it with `npm run solver` (separate process from `npm run worker`). It gates on
+  the **real GitHub `ready-for-agent` label** (so manually-triaged issues work too),
+  via the `issues` webhook + a `gh issue list` reconcile fallback.
+- Trigger gates are deliberate: a human opens a follow-up, then promotes it to
+  `ready-for-agent`. Don't add an auto-cascade — preserve the two human brakes.
