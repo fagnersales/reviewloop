@@ -126,6 +126,10 @@ let latestClaimable = []
 // double-process one. Cheap gh calls, so no concurrency cap is needed.
 const processingSuggestions = new Set()
 
+// Review rows we're mid-merge on, by row id — so a re-fired pendingMerges
+// subscription doesn't fire a second `gh pr merge` for the same PR.
+const processingMerges = new Set()
+
 // The dashboard-owned watch list, kept live via repos.list (see subscriptions).
 // Drives the `gh` reconcile; the queue itself decides what actually gets reviewed.
 let watchedRepos = []
@@ -854,10 +858,57 @@ async function syncSuggestedLabel(row) {
   }
 }
 
+// ── PR merge (the final human gate, via the console Merge button) ────────────
+// The console records intent (reviews.requestMerge); this worker holds gh auth and
+// runs the actual merge. `gh pr merge` enforces branch protection / required checks
+// server-side, so an unmergeable PR fails here with a reason (surfaced in the
+// console) rather than being force-merged. Squash + delete-branch mirrors the
+// pr-feature merge convention.
+async function doMerge(row) {
+  const id = row._id
+  if (processingMerges.has(id)) return
+  processingMerges.add(id)
+  try {
+    const { code, err } = await run("gh", [
+      "pr",
+      "merge",
+      String(row.prNumber),
+      "--repo",
+      row.repo,
+      "--squash",
+      "--delete-branch",
+    ])
+    if (code !== 0) {
+      const reason = (err || "").trim().split("\n").pop() || `gh pr merge exited ${code}`
+      log(`✗ merge failed ${row.repo}#${row.prNumber}: ${reason}`)
+      await client
+        .mutation(api.reviews.recordMergeError, { id, error: reason })
+        .catch((e) => log(`recordMergeError #${row.prNumber}:`, String(e)))
+      return
+    }
+    log(`✓ merged ${row.repo}#${row.prNumber} (squash + delete branch)`)
+    await client
+      .mutation(api.reviews.markMergeDone, { id })
+      .catch((e) => log(`markMergeDone #${row.prNumber}:`, String(e)))
+  } catch (e) {
+    await client.mutation(api.reviews.recordMergeError, { id, error: String(e) }).catch(() => {})
+  } finally {
+    processingMerges.delete(id)
+  }
+}
+
 // ── subscriptions ────────────────────────────────────────────────────────────
 client.onUpdate(api.reviews.claimable, {}, (rows) => {
   latestClaimable = rows
   pump()
+})
+
+// Human-requested merges to execute on GitHub. The in-flight guard means a re-fire
+// while one is mid-merge is a no-op.
+client.onUpdate(api.reviews.pendingMerges, {}, (rows) => {
+  for (const row of rows) {
+    doMerge(row).catch((e) => log(`doMerge error #${row.prNumber}:`, String(e)))
+  }
 })
 
 // Approved proposals to file on GitHub (gate 1), and opened issues whose label the

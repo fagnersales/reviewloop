@@ -781,6 +781,80 @@ function MetaTiming({ pr }: { pr: Pr }) {
   )
 }
 
+// The final human gate: squash-merge a reviewed PR from the console. Records intent
+// (reviews.requestMerge); the worker runs `gh pr merge` (it holds gh auth and the
+// merge respects branch protection). Only shows on an open, reviewed PR, and never
+// in the read-only public build (it's a write). A confirm step guards the
+// irreversible action and warns when the review still has P0/P1 blockers; a failed
+// attempt surfaces its reason and flips to "Retry merge".
+function MergeButton({ pr }: { pr: Pr }) {
+  const readOnly = useReadOnly()
+  const requestMerge = useMutation(api.reviews.requestMerge)
+  const [confirming, setConfirming] = useState(false)
+
+  if (readOnly || pr.status !== "reviewed" || pr.prState) return null
+
+  // Worker is mid-merge.
+  if (pr.mergeRequestedAt != null) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-violet-500/30 bg-violet-500/10 px-2.5 py-1.5 text-xs font-medium text-violet-200">
+        <Loader2 className="size-3.5 animate-spin" />
+        Merging…
+      </span>
+    )
+  }
+
+  const blockers = (pr.p0 ?? 0) > 0 || (pr.p1 ?? 0) > 0
+  const submit = () => {
+    void requestMerge({ repo: pr.repo, prNumber: pr.prNumber, by: "dashboard" })
+    setConfirming(false)
+  }
+
+  if (confirming) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5">
+        <span className="text-[11px] text-zinc-500">{blockers ? "Has P0/P1 —" : "Squash-merge?"}</span>
+        <button
+          type="button"
+          onClick={submit}
+          className="inline-flex items-center gap-1 rounded-md border border-violet-500/40 bg-violet-500/15 px-2 py-1.5 text-xs font-medium text-violet-100 transition hover:bg-violet-500/25"
+        >
+          <GitMerge className="size-3.5" />
+          Confirm
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          className="rounded-md border border-zinc-800 px-2 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
+        >
+          Cancel
+        </button>
+      </span>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      title={
+        pr.mergeError
+          ? `Last merge attempt failed: ${pr.mergeError}`
+          : "Squash-merge and delete the branch"
+      }
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition",
+        pr.mergeError
+          ? "border-rose-500/30 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
+          : "border-violet-500/30 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20",
+      )}
+    >
+      <GitMerge className="size-3.5" />
+      {pr.mergeError ? "Retry merge" : "Merge"}
+    </button>
+  )
+}
+
 function ReviewDetail({
   pr,
   hasPrs,
@@ -925,16 +999,19 @@ function ReviewDetail({
               <MetaTiming pr={pr} />
             </div>
           </div>
-          <a
-            href={pr.prUrl}
-            target="_blank"
-            rel="noreferrer"
-            title="Open PR on GitHub"
-            aria-label="Open PR on GitHub"
-            className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-100"
-          >
-            <ExternalLink className="size-4" />
-          </a>
+          <div className="flex shrink-0 items-center gap-2">
+            <MergeButton pr={pr} />
+            <a
+              href={pr.prUrl}
+              target="_blank"
+              rel="noreferrer"
+              title="Open PR on GitHub"
+              aria-label="Open PR on GitHub"
+              className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-100"
+            >
+              <ExternalLink className="size-4" />
+            </a>
+          </div>
         </div>
       </div>
 

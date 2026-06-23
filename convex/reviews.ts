@@ -14,6 +14,11 @@ const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed w
 // stale badge), and a real review fix can legitimately take a while.
 const ACK_STALE_MS = 90 * 60 * 1000
 
+// Stop the worker re-attempting `gh pr merge` forever when it keeps failing
+// (conflicts, failing required checks, branch protection). After this many tries the
+// pass drops out of pendingMerges with its `mergeError` kept for the console.
+const MAX_MERGE_ATTEMPTS = 5
+
 // Upper bound on how many log lines `reviewLog` returns, and how many a single
 // `clearReviewLog` sweep deletes in one mutation. A 25-min run at the worker's
 // ~1/s throttle stays well under this; the cap just keeps the read/write sizes
@@ -293,6 +298,98 @@ export const ack = mutation({
     const ackedAt = Date.now()
     await ctx.db.patch(target._id, { ackedAt, ackedBy: by })
     return { ok: true, headSha: target.headSha, ackedAt, ackedBy: by }
+  },
+})
+
+// Human clicks "Merge" on a reviewed PR — the final gate, behind the console Merge
+// button. Convex only records intent; the worker holds gh auth and runs the actual
+// `gh pr merge` when it sees this via pendingMerges (exactly like ack and the
+// suggestedIssues flow). Targets the PR's *latest* pass — the one the board
+// surfaces — so a concurrent re-push can't make the request land on a superseded
+// row. Only a still-open, `reviewed` pass is mergeable: there's nothing to merge on
+// a queued/reviewing/failed pass or an already merged/closed PR. The human's
+// judgment is the gate here — P2s (or even P1s) don't block the request; the merge
+// itself still respects GitHub branch protection / required checks worker-side.
+export const requestMerge = mutation({
+  args: { repo: v.string(), prNumber: v.number(), by: v.string() },
+  returns: v.object({
+    ok: v.boolean(),
+    reason: v.optional(v.string()),
+    headSha: v.optional(v.string()),
+  }),
+  handler: async (ctx, { repo, prNumber, by }) => {
+    const rows = await ctx.db
+      .query("reviews")
+      .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
+      .collect()
+    if (rows.length === 0) return { ok: false, reason: "no review row for this PR" }
+    const target = rows.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+    if (target.status !== "reviewed")
+      return { ok: false, reason: `pass is ${target.status}, not reviewed`, headSha: target.headSha }
+    if (target.prState)
+      return { ok: false, reason: `PR is ${target.prState}`, headSha: target.headSha }
+    await ctx.db.patch(target._id, {
+      mergeRequestedAt: Date.now(),
+      mergeRequestedBy: by,
+      mergeError: undefined,
+      mergeAttempts: 0,
+    })
+    return { ok: true, headSha: target.headSha }
+  },
+})
+
+// The worker subscribes to this: reviewed passes a human asked to merge that aren't
+// merged/closed yet and haven't exhausted their retry budget.
+export const pendingMerges = query({
+  args: {},
+  returns: v.array(reviewDoc),
+  handler: async (ctx) => {
+    const rows = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "reviewed"))
+      .order("desc")
+      .take(100)
+    return rows.filter(
+      (r) =>
+        r.mergeRequestedAt != null &&
+        r.prState == null &&
+        (r.mergeAttempts ?? 0) < MAX_MERGE_ATTEMPTS,
+    )
+  },
+})
+
+// Worker reports the merge landed. Clears the intent so pendingMerges drops it at
+// once — the closed/merged webhook then flips prState to "merged" (and the solve
+// task to done). Clearing here, rather than waiting on the webhook, stops the worker
+// re-merging an already-merged PR in the gap before the delivery arrives.
+export const markMergeDone = mutation({
+  args: { id: v.id("reviews") },
+  returns: v.null(),
+  handler: async (ctx, { id }) => {
+    const row = await ctx.db.get(id)
+    if (!row) return null
+    await ctx.db.patch(id, { mergeRequestedAt: undefined, mergeError: undefined })
+    return null
+  },
+})
+
+// Worker records a failed `gh pr merge` (conflicts, failing required checks, branch
+// protection). Clears the merge intent — so the worker does NOT blindly auto-retry a
+// merge that needs human attention — and keeps the reason for the console to surface
+// with a "Retry merge" affordance. mergeAttempts is bumped as a guard so a pathological
+// re-request loop still bottoms out at MAX_MERGE_ATTEMPTS.
+export const recordMergeError = mutation({
+  args: { id: v.id("reviews"), error: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { id, error }) => {
+    const row = await ctx.db.get(id)
+    if (!row) return null
+    await ctx.db.patch(id, {
+      mergeError: error,
+      mergeRequestedAt: undefined,
+      mergeAttempts: (row.mergeAttempts ?? 0) + 1,
+    })
+    return null
   },
 })
 
@@ -587,6 +684,11 @@ const prDoc = v.object({
   // "Awaiting agent" vs "In progress" distinction on the list/header badge.
   ackedAt: v.optional(v.number()),
   ackedBy: v.optional(v.string()),
+  // The latest pass's merge state (the console Merge button). mergeRequestedAt set =
+  // "Merging…" (worker is running gh pr merge); mergeError = the last attempt's reason.
+  mergeRequestedAt: v.optional(v.number()),
+  mergeRequestedBy: v.optional(v.string()),
+  mergeError: v.optional(v.string()),
   updatedAt: v.number(),
   // GitHub lifecycle anchors for the list/header timing. Optional: a PR whose
   // rows predate timestamp capture has neither, and the client falls back to
@@ -657,6 +759,9 @@ export const prs = query({
         progress: latest.progress,
         ackedAt: latest.ackedAt,
         ackedBy: latest.ackedBy,
+        mergeRequestedAt: latest.mergeRequestedAt,
+        mergeRequestedBy: latest.mergeRequestedBy,
+        mergeError: latest.mergeError,
         updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.queuedAt,
         prCreatedAt,
         closedAt,

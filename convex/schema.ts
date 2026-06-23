@@ -206,6 +206,18 @@ export const reviewFields = {
   //   ackedBy : who acked — agent/host label, free-form (e.g. "claude@macbook")
   ackedAt: v.optional(v.number()),
   ackedBy: v.optional(v.string()),
+  // A human-requested merge of this PR — the final gate, stamped on the latest
+  // reviewed pass by the console Merge button (reviews.requestMerge). Convex only
+  // records intent; the worker holds gh auth and runs `gh pr merge` when it sees
+  // this via pendingMerges, exactly like ack / suggestedIssues. Cleared on success
+  // (the merge webhook then flips prState to "merged"); on failure mergeError holds
+  // the reason and mergeAttempts bounds the worker's retries.
+  //   mergeRequestedAt : when a human clicked Merge (ms)
+  //   mergeRequestedBy : who requested it — free-form label (e.g. "dashboard")
+  mergeRequestedAt: v.optional(v.number()),
+  mergeRequestedBy: v.optional(v.string()),
+  mergeError: v.optional(v.string()),
+  mergeAttempts: v.optional(v.number()),
   // results, filled by `finish`
   reviewUrl: v.optional(v.string()),
   confidence: v.optional(v.number()),
