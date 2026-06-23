@@ -19,6 +19,17 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Tailwind v4's Preflight dropped the default `cursor: pointer` on buttons that
+   v3 had, so every <button> in the app showed the arrow cursor. Restore it
+   globally (the documented v4 migration fix) so buttons read as clickable;
+   disabled buttons keep the default cursor. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
 @keyframes pulse-dot {
   0%,
   100% {
