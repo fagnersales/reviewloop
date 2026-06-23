@@ -355,6 +355,9 @@ async function runSolve(row) {
   const logFile = join(LOG_DIR, `solve-${row.issueNumber}-${branch.replace(/[^a-z0-9]+/gi, "-")}.log`)
   log(`▶ solving ${row.repo}#${row.issueNumber} on ${branch} (cwd ${co.path}) -> ${logFile}`)
 
+  // Worktrees the solve created, captured by snapshot-diff (see below) so we can
+  // both locate the PR and clean up regardless of what EnterWorktree named them.
+  let created = []
   try {
     // Fetch latest so the worktree branches off the freshest origin/<default>.
     await progress(row, "Fetching latest from origin")
@@ -363,19 +366,35 @@ async function runSolve(row) {
       log(`⚠ git fetch failed in ${co.path}: ${(fetched.err || "").trim().split("\n").pop()}`)
     }
 
+    // Snapshot worktrees BEFORE the run. EnterWorktree transforms the name we ask
+    // for (e.g. `solve/issue-33-…` becomes a `worktree-solve+issue-33-…` branch),
+    // so we can't rely on the requested name — instead we diff this snapshot after
+    // the run to learn the worktree(s) and branch(es) the agent actually created.
+    const before = await listWorktrees(co.path)
+
     // Fetch the issue body for the brief.
     const issueBody = await fetchIssueBody(row.repo, row.issueNumber)
 
     const prompt = solvePrompt(row, branch, issueBody, cfg.maxFixRounds)
     const ok = await spawnPrFeature(row, co.path, prompt, logFile)
 
-    // The agent opened (or failed to open) the PR internally; find it by head branch.
+    // Whatever worktree(s) appeared are the agent's; their branches are the actual
+    // PR head refs. Use them (plus the name we requested, as a belt-and-braces
+    // candidate) to locate the PR.
+    const after = await listWorktrees(co.path)
+    created = after.filter((w) => !before.some((b) => b.dir === w.dir))
+    const candidates = [...new Set([branch, ...created.map((c) => c.branch)].filter(Boolean))]
+
     await progress(row, "Locating the opened PR")
-    const pr = await capturePr(row.repo, branch, row.issueNumber)
+    const pr = await capturePr(row.repo, candidates, row.issueNumber)
 
     if (pr) {
-      log(`✓ ${row.repo}#${row.issueNumber} -> PR #${pr.number} (${branch})`)
-      await finish(row, "pr-opened", { branch, prNumber: pr.number, prUrl: pr.url })
+      log(`✓ ${row.repo}#${row.issueNumber} -> PR #${pr.number} (${pr.branch ?? branch})`)
+      await finish(row, "pr-opened", {
+        branch: pr.branch ?? branch,
+        prNumber: pr.number,
+        prUrl: pr.url,
+      })
     } else {
       const why = ok
         ? "the solve run finished but no PR was found for the issue"
@@ -386,13 +405,14 @@ async function runSolve(row) {
         row.repo,
         row.issueNumber,
         `🤖 prr-console solver could not finish this autonomously: ${why}. ` +
-          `Branch \`${branch}\` may hold partial work. A human can take it from here.`,
+          `A human can take it from here.`,
       ).catch(() => {})
     }
   } finally {
-    // Always clean up the local worktree + local branch in the dedicated checkout.
-    // The remote branch (and its PR, if opened) is left intact for the human.
-    await cleanupWorktree(co.path, branch).catch((e) =>
+    // Always remove the local worktree(s) + branch(es) the solve created in the
+    // dedicated checkout. The remote branch (and its PR, if opened) is left intact
+    // for the human. Snapshot-diff based, so it works whatever EnterWorktree named.
+    await cleanupWorktrees(co.path, created).catch((e) =>
       log(`cleanup error ${row.repo}#${row.issueNumber}:`, String(e)),
     )
   }
@@ -501,27 +521,69 @@ function spawnPrFeature(row, cwd, prompt, logFile) {
   })
 }
 
-// ── PR capture (issue -> PR lineage) ─────────────────────────────────────────
-// Primary: the PR whose head branch is the one we assigned. Fallback: scan recent
-// PRs for one that references this issue (head-branch match or a Closes/Fixes line),
-// in case the agent named the branch differently than asked.
-async function capturePr(repo, branch, issueNumber) {
-  const byHead = await run("gh", [
-    "pr", "list", "--repo", repo, "--head", branch,
-    "--state", "all", "--json", "number,url,state", "--limit", "10",
-  ])
-  const pick = (arr) => {
-    if (!Array.isArray(arr) || arr.length === 0) return undefined
-    const open = arr.find((p) => p.state === "OPEN")
-    const chosen = open ?? arr[arr.length - 1]
-    return chosen?.number != null ? { number: chosen.number, url: chosen.url } : undefined
+// path basename, for compact "Reading <file>" lines
+function base(p) {
+  return (p || "").split("/").pop() || p || ""
+}
+
+// first non-empty line of a block of text, trimmed + clamped
+function firstLine(t) {
+  const line = (t || "").split("\n").map((s) => s.trim()).find(Boolean) || ""
+  return line.slice(0, 240)
+}
+
+// a short human label for what a tool call is doing — drives the live progress line
+function describeTool(name, input = {}) {
+  switch (name) {
+    case "Bash":
+      return `$ ${(input.command || "").replace(/\s+/g, " ").slice(0, 180)}`
+    case "Read":
+      return `Reading ${base(input.file_path)}`
+    case "Edit":
+    case "MultiEdit":
+    case "Write":
+      return `Editing ${base(input.file_path)}`
+    case "Grep":
+      return `Searching "${(input.pattern || "").slice(0, 80)}"`
+    case "Glob":
+      return `Finding ${input.pattern || ""}`
+    case "WebFetch":
+      return `Fetching ${input.url || ""}`
+    case "WebSearch":
+      return `Web search: ${input.query || ""}`
+    case "Task":
+      return `Subagent: ${input.description || "task"}`
+    case "TodoWrite":
+      return "Updating its plan"
+    default:
+      return name?.startsWith("mcp__")
+        ? name.replace(/^mcp__/, "").replace(/__/g, " · ")
+        : name || "working…"
   }
-  if (byHead.code === 0) {
+}
+
+// ── PR capture (issue -> PR lineage) ─────────────────────────────────────────
+// Primary: a PR whose head branch is one of the candidate branches (the name we
+// asked for + the names the worktree(s) actually used). Fallback: scan recent PRs
+// for one that references this issue (head match or a Closes/Fixes line in the
+// body) — covers the case where EnterWorktree renamed the branch out from under us.
+// Returns { number, url, branch } or undefined.
+async function capturePr(repo, candidates, issueNumber) {
+  for (const b of candidates) {
+    const byHead = await run("gh", [
+      "pr", "list", "--repo", repo, "--head", b,
+      "--state", "all", "--json", "number,url,state,headRefName", "--limit", "10",
+    ])
+    if (byHead.code !== 0) continue
     try {
-      const found = pick(JSON.parse(byHead.out))
-      if (found) return found
+      const arr = JSON.parse(byHead.out)
+      if (Array.isArray(arr) && arr.length) {
+        const chosen = arr.find((p) => p.state === "OPEN") ?? arr[arr.length - 1]
+        if (chosen?.number != null)
+          return { number: chosen.number, url: chosen.url, branch: chosen.headRefName ?? b }
+      }
     } catch {
-      /* fall through */
+      /* fall through to next candidate */
     }
   }
 
@@ -535,9 +597,9 @@ async function capturePr(repo, branch, issueNumber) {
     const arr = JSON.parse(recent.out)
     const ref = new RegExp(`\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+#${issueNumber}\\b`, "i")
     const hit = arr.find(
-      (p) => p.headRefName === branch || (typeof p.body === "string" && ref.test(p.body)),
+      (p) => candidates.includes(p.headRefName) || (typeof p.body === "string" && ref.test(p.body)),
     )
-    return hit?.number != null ? { number: hit.number, url: hit.url } : undefined
+    return hit?.number != null ? { number: hit.number, url: hit.url, branch: hit.headRefName } : undefined
   } catch {
     return undefined
   }
@@ -556,77 +618,72 @@ async function fetchIssueBody(repo, issueNumber) {
 }
 
 // ── worktree / branch cleanup ────────────────────────────────────────────────
-// After each solve, remove the local worktree + local branch in the dedicated
-// checkout (the remote branch + PR live on GitHub for the human). Targeted by
-// branch via `git worktree list --porcelain`, so it works whatever path
-// EnterWorktree chose.
-async function cleanupWorktree(checkout, branch) {
+// Parse `git worktree list --porcelain` into [{ dir, branch }] (branch undefined
+// when the worktree is detached). One source of truth for the snapshot-diff used
+// to find + clean up whatever EnterWorktree created.
+async function listWorktrees(checkout) {
   const list = await run("git", ["-C", checkout, "worktree", "list", "--porcelain"])
-  if (list.code === 0) {
-    for (const path of worktreePathsForBranch(list.out, branch)) {
-      const rm = await run("git", ["-C", checkout, "worktree", "remove", "--force", path])
-      if (rm.code === 0) log(`🧹 removed worktree ${path}`)
+  if (list.code !== 0) return []
+  const out = []
+  let dir, branch, flushed
+  const flush = () => {
+    if (dir && !flushed) {
+      out.push({ dir, branch })
+      flushed = true
     }
   }
-  await run("git", ["-C", checkout, "worktree", "prune"])
-  // Delete the LOCAL branch only — never the remote (it backs the PR).
-  await run("git", ["-C", checkout, "branch", "-D", branch])
-}
-
-// Parse `git worktree list --porcelain` into the worktree dirs on a given branch.
-function worktreePathsForBranch(porcelain, branch) {
-  const want = `refs/heads/${branch}`
-  const paths = []
-  let curPath
-  for (const line of (porcelain || "").split("\n")) {
-    if (line.startsWith("worktree ")) curPath = line.slice("worktree ".length).trim()
-    else if (line.startsWith("branch ") && line.slice("branch ".length).trim() === want && curPath)
-      paths.push(curPath)
-    else if (line.trim() === "") curPath = undefined
+  for (const line of (list.out || "").split("\n")) {
+    if (line.startsWith("worktree ")) {
+      flush()
+      dir = line.slice("worktree ".length).trim()
+      branch = undefined
+      flushed = false
+    } else if (line.startsWith("branch ")) {
+      branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "")
+    } else if (line.trim() === "") {
+      flush()
+    }
   }
-  return paths
+  flush()
+  return out
 }
 
-// Crash backstop: at startup, sweep stale `solve/issue-*` worktrees in every
-// configured checkout (a crash can leave one behind). Age-bounded by the solve
-// timeout + margin so a concurrent/live solve's worktree is never swept.
+// Remove the given worktrees + their LOCAL branches from a checkout (never the
+// remote branch — it backs the PR). Safe to call with an empty list. Used both for
+// per-solve cleanup and the startup stale-sweep.
+async function cleanupWorktrees(checkout, worktrees) {
+  for (const w of worktrees) {
+    const rm = await run("git", ["-C", checkout, "worktree", "remove", "--force", w.dir])
+    if (rm.code === 0) log(`🧹 removed worktree ${w.dir}`)
+    if (w.branch) await run("git", ["-C", checkout, "branch", "-D", w.branch])
+  }
+  await run("git", ["-C", checkout, "worktree", "prune"])
+}
+
+// Crash backstop: at startup, sweep stale worktrees a crashed solve left behind in
+// every configured checkout. These are DEDICATED, solver-owned checkouts, so any
+// worktree nested under `.claude/worktrees/` is ours to reap. Age-bounded by the
+// solve timeout + margin, so a concurrent/live solve's worktree is never swept.
 async function sweepStaleWorktrees() {
   const staleMs = (Number(cfg.solveTimeoutMin) + 60) * 60 * 1000
   const now = Date.now()
   for (const { path: checkout } of CHECKOUTS.values()) {
-    const list = await run("git", ["-C", checkout, "worktree", "list", "--porcelain"])
-    if (list.code !== 0) continue
-    let swept = 0
-    for (const { dir, branch } of solveWorktrees(list.out)) {
+    const wts = await listWorktrees(checkout)
+    const stale = wts.filter((w) => {
+      if (!w.dir.includes("/.claude/worktrees/")) return false // never the main checkout
       try {
-        if (now - statSync(dir).mtimeMs < staleMs) continue
+        return now - statSync(w.dir).mtimeMs >= staleMs
       } catch {
-        continue
+        return false
       }
-      const rm = await run("git", ["-C", checkout, "worktree", "remove", "--force", dir])
-      if (rm.code === 0) {
-        await run("git", ["-C", checkout, "branch", "-D", branch])
-        swept++
-      }
+    })
+    if (stale.length) {
+      await cleanupWorktrees(checkout, stale)
+      log(`swept ${stale.length} stale solve worktree(s) from ${checkout}`)
+    } else {
+      await run("git", ["-C", checkout, "worktree", "prune"])
     }
-    await run("git", ["-C", checkout, "worktree", "prune"])
-    if (swept) log(`swept ${swept} stale solve worktree(s) from ${checkout}`)
   }
-}
-
-// All worktrees whose branch is a solve branch, as { dir, branch }.
-function solveWorktrees(porcelain) {
-  const out = []
-  let curPath
-  for (const line of (porcelain || "").split("\n")) {
-    if (line.startsWith("worktree ")) curPath = line.slice("worktree ".length).trim()
-    else if (line.startsWith("branch ")) {
-      const ref = line.slice("branch ".length).trim()
-      if (curPath && ref.startsWith("refs/heads/solve/issue-"))
-        out.push({ dir: curPath, branch: ref.slice("refs/heads/".length) })
-    } else if (line.trim() === "") curPath = undefined
-  }
-  return out
 }
 
 // ── reconcile: enqueue any open ready-for-agent issue missing from the queue ──
