@@ -657,12 +657,25 @@ async function reconcile(reason) {
 // the GitHub side: file approved proposals as issues, and propagate the human's
 // triage-label choice to the real issue (which the solver loop reads).
 
-// The triage state-role labels (mutually exclusive — an issue carries exactly one).
-const STATE_LABELS = ["needs-triage", "ready-for-agent", "ready-for-human", "wontfix"]
+// The state-role labels (mutually exclusive — an issue carries exactly one). The
+// triage subset (needs-triage / ready-for-agent / ready-for-human / wontfix) is
+// human-set; agent-in-progress / agent-failed are set by the solver as it builds
+// (see worker/solver.mjs). Listed here too so this worker's gate-2 label-sync treats
+// them as part of the same mutually-exclusive set.
+const STATE_LABELS = [
+  "needs-triage",
+  "ready-for-agent",
+  "agent-in-progress",
+  "ready-for-human",
+  "agent-failed",
+  "wontfix",
+]
 const LABEL_COLORS = {
   "needs-triage": "fbca04",
   "ready-for-agent": "5319e7",
+  "agent-in-progress": "1d76db",
   "ready-for-human": "0e8a16",
+  "agent-failed": "d73a4a",
   wontfix: "ffffff",
 }
 

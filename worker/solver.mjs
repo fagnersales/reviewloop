@@ -156,6 +156,78 @@ function run(cmd, args, opts = {}) {
   })
 }
 
+// ── GitHub issue label lifecycle ─────────────────────────────────────────────
+// The solver moves a solved issue through mutually-exclusive state-role labels so
+// `ready-for-agent` means ONLY "waiting, claimable" — never an in-flight or finished
+// solve, so nothing else (another host's solver, a triage agent, a human browsing
+// the label) can capture it mid-build:
+//   on start   ready-for-agent → agent-in-progress
+//   on success agent-in-progress → ready-for-human  (a human reviews/merges the PR;
+//                                                     Closes #N closes it on merge)
+//   on failure agent-in-progress → agent-failed      (a human re-triages; re-promoting
+//                                                     to ready-for-agent retries)
+// Since the reconcile keys on `ready-for-agent`, in-progress and failed issues fall
+// out of the claimable pool automatically — no auto-retry of an expensive failed solve.
+const STATE_LABELS = [
+  "needs-triage",
+  "ready-for-agent",
+  "agent-in-progress",
+  "ready-for-human",
+  "agent-failed",
+  "wontfix",
+]
+const LABEL_COLORS = {
+  "needs-triage": "fbca04",
+  "ready-for-agent": "5319e7",
+  "agent-in-progress": "1d76db",
+  "ready-for-human": "0e8a16",
+  "agent-failed": "d73a4a",
+  wontfix: "ffffff",
+}
+
+// Make sure the label exists before adding it (--force creates-or-updates).
+async function ensureLabel(repo, name) {
+  await run("gh", [
+    "label", "create", name, "--repo", repo,
+    "--color", LABEL_COLORS[name] ?? "ededed", "--force",
+  ])
+}
+
+// The state-role labels currently on an issue (so a swap only removes present ones —
+// `gh issue edit --remove-label` errors on an absent label).
+async function currentStateLabels(repo, issueNumber) {
+  const { code, out } = await run("gh", [
+    "issue", "view", String(issueNumber), "--repo", repo, "--json", "labels",
+  ])
+  if (code !== 0) return []
+  try {
+    return (JSON.parse(out).labels ?? [])
+      .map((l) => l.name)
+      .filter((n) => STATE_LABELS.includes(n))
+  } catch {
+    return []
+  }
+}
+
+// Move the issue to exactly one state-role label: add `desired`, remove any other
+// state labels present. Best-effort — a label hiccup is logged but never fails the
+// solve (the Convex claim, not the label, is what prevents a double-solve).
+async function swapStateLabel(repo, issueNumber, desired) {
+  try {
+    await ensureLabel(repo, desired)
+    const present = await currentStateLabels(repo, issueNumber)
+    const remove = present.filter((l) => l !== desired)
+    const args = ["issue", "edit", String(issueNumber), "--repo", repo, "--add-label", desired]
+    for (const l of remove) args.push("--remove-label", l)
+    const { code, err } = await run("gh", args)
+    if (code !== 0)
+      log(`⚠ label swap ${repo}#${issueNumber} → ${desired} failed: ${(err || "").trim().split("\n").pop()}`)
+    else log(`🏷  ${repo}#${issueNumber} → ${desired}`)
+  } catch (e) {
+    log(`⚠ label swap ${repo}#${issueNumber} error:`, String(e))
+  }
+}
+
 // ── checkout validation (fail loud) ──────────────────────────────────────────
 // Two gates decide whether a ready-for-agent issue is solvable: Convex
 // `watchedRepos` ("in the system") and this local checkout registry ("solvable on
@@ -355,6 +427,11 @@ async function runSolve(row) {
   const logFile = join(LOG_DIR, `solve-${row.issueNumber}-${branch.replace(/[^a-z0-9]+/gi, "-")}.log`)
   log(`▶ solving ${row.repo}#${row.issueNumber} on ${branch} (cwd ${co.path}) -> ${logFile}`)
 
+  // Take the issue off the ready-for-agent pool the instant we commit to building it
+  // (only now — checkout validated — so a host that can't solve it never grabs the
+  // label), so nothing else captures it mid-solve.
+  await swapStateLabel(row.repo, row.issueNumber, "agent-in-progress")
+
   // Worktrees the solve created, captured by snapshot-diff (see below) so we can
   // both locate the PR and clean up regardless of what EnterWorktree named them.
   let created = []
@@ -395,6 +472,9 @@ async function runSolve(row) {
         prNumber: pr.number,
         prUrl: pr.url,
       })
+      // Agent's done — hand the issue to a human to review/merge the PR (Closes #N
+      // closes it on merge).
+      await swapStateLabel(row.repo, row.issueNumber, "ready-for-human")
     } else {
       const why = ok
         ? "the solve run finished but no PR was found for the issue"
@@ -405,8 +485,11 @@ async function runSolve(row) {
         row.repo,
         row.issueNumber,
         `🤖 prr-console solver could not finish this autonomously: ${why}. ` +
-          `A human can take it from here.`,
+          `A human can take it from here — re-label \`ready-for-agent\` to retry.`,
       ).catch(() => {})
+      // Hand it back to a human (a distinct state from "never triaged"); the
+      // reconcile no longer sees it, so it won't auto-retry an expensive failed solve.
+      await swapStateLabel(row.repo, row.issueNumber, "agent-failed")
     }
   } finally {
     // Always remove the local worktree(s) + branch(es) the solve created in the

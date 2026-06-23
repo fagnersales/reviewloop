@@ -94,5 +94,9 @@ Operator/agent notes if you touch this:
 - Run it with `npm run solver` (separate process from `npm run worker`). It gates on
   the **real GitHub `ready-for-agent` label** (so manually-triaged issues work too),
   via the `issues` webhook + a `gh issue list` reconcile fallback.
+- It **swaps the issue's state-role label** as it works so `ready-for-agent` only ever
+  means "waiting, claimable": `ready-for-agent` →(claim)→ `agent-in-progress`
+  →(PR opened)→ `ready-for-human`, or →(failed)→ `agent-failed`. A failed solve does
+  **not** auto-retry (the reconcile keys on `ready-for-agent`); re-label to retry.
 - Trigger gates are deliberate: a human opens a follow-up, then promotes it to
   `ready-for-agent`. Don't add an auto-cascade — preserve the two human brakes.

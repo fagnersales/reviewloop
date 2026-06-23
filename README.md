@@ -148,6 +148,30 @@ an agent-proposed follow-up (or files an issue by hand), then **promotes** it to
 `ready-for-agent`. Only then does the solver act. The label is the single trigger —
 so manually-triaged issues work too, not just agent-proposed ones.
 
+### The issue label lifecycle
+
+`ready-for-agent` means **only "waiting, claimable"** — so the solver swaps the
+issue's state-role label as it works, and nothing else (another host's solver, a
+triage agent, a human browsing the label) can pick up an in-flight issue:
+
+```
+ready-for-agent ──claim──▶ agent-in-progress ──PR opened──▶ ready-for-human
+                                   └─────────────failed─────▶ agent-failed
+```
+
+- **claim → `agent-in-progress`** the instant the solver commits to building it
+  (after the checkout validates, so a host that *can't* build it never grabs the
+  label). It's now off the `ready-for-agent` pool.
+- **PR opened → `ready-for-human`** — the agent's done; a human reviews/merges the
+  PR (the PR's `Closes #N` closes the issue on merge).
+- **failed → `agent-failed`** (a distinct state, plus a stall comment). The reconcile
+  keys on `ready-for-agent`, so a failed solve **does not auto-retry** an expensive
+  build — re-label it `ready-for-agent` to retry, or take it over by hand.
+
+The two `agent-*` labels are solver-set lifecycle states (not part of the human
+triage picker). The `claim` itself is also guarded server-side by the atomic Convex
+`solveTasks.claim`; the label swap is what makes the *GitHub* view honest too.
+
 ### Setup
 
 1. **Enable the `Issues` event** on the repo webhook (the one-time webhook in
