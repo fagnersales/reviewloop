@@ -8,6 +8,11 @@
 //                           repo, and report the result back.
 //   - repos.list         -> the live watch list (owned by the dashboard). Drives
 //                           the `gh` reconcile; a change re-reconciles at once.
+//   - suggestedIssues.approvedToOpen / .labelToSync -> the GitHub side of the
+//                           PR-follow-ups loop: file human-approved proposals as
+//                           `needs-triage` issues (gate 1), and propagate a human's
+//                           triage-label choice to the real issue (gate 2). The
+//                           console only records intent; this worker holds gh auth.
 // A long fallback timer reconciles open PRs via `gh` too, so a webhook missed
 // while we were down still gets caught. This replaces the old watch.sh poll loop.
 //
@@ -115,6 +120,11 @@ const client = new ConvexClient(CONVEX_URL)
 const inflight = new Set()
 const claiming = new Set()
 let latestClaimable = []
+
+// Suggested-issue rows the worker is mid-side-effect on (creating the GitHub
+// issue, or syncing its label), by row id — so a re-fired subscription doesn't
+// double-process one. Cheap gh calls, so no concurrency cap is needed.
+const processingSuggestions = new Set()
 
 // The dashboard-owned watch list, kept live via repos.list (see subscriptions).
 // Drives the `gh` reconcile; the queue itself decides what actually gets reviewed.
@@ -637,10 +647,231 @@ async function reconcile(reason) {
   }
 }
 
+// ── suggested-issue side-effects (gate 1: open · gate 2: label) ──────────────
+// The console only records *intent* (Convex has no GitHub auth — the worker does,
+// exactly like reviews). The worker watches two claimable-style queries and does
+// the GitHub side: file approved proposals as issues, and propagate the human's
+// triage-label choice to the real issue (which the solver loop reads).
+
+// The triage state-role labels (mutually exclusive — an issue carries exactly one).
+const STATE_LABELS = ["needs-triage", "ready-for-agent", "ready-for-human", "wontfix"]
+const LABEL_COLORS = {
+  "needs-triage": "fbca04",
+  "ready-for-agent": "5319e7",
+  "ready-for-human": "0e8a16",
+  wontfix: "ffffff",
+}
+
+// Best-effort: make sure the label exists on the repo before we add it. `--force`
+// creates it if missing and is a no-op-ish update if present, so this never errors
+// the caller on "already exists".
+async function ensureLabel(repo, name) {
+  await run("gh", [
+    "label",
+    "create",
+    name,
+    "--repo",
+    repo,
+    "--color",
+    LABEL_COLORS[name] ?? "ededed",
+    "--force",
+  ])
+}
+
+// The GitHub issue body for an opened proposal: the brief a *fresh* agent reads
+// (no prior knowledge of the source PR), plus a machine-readable dedup marker so
+// a re-run / a crash between create and markOpened can't double-file. The issue
+// *title* is row.title (passed to `gh issue create --title`), so it's not repeated
+// here — this is just the body.
+function suggestedIssueBody(row) {
+  const files =
+    row.files && row.files.length
+      ? `\n\n**Files to touch:** ${row.files.map((f) => `\`${f}\``).join(", ")}`
+      : ""
+  return `${row.body}${files}
+
+---
+
+## Source PR (context for a fresh agent)
+
+This issue was proposed by an automated agent **while it built the PR below**. You are a fresh session with **no prior knowledge of that work** — read this before implementing.
+
+- Repo: \`${row.repo}\`
+- Source PR: #${row.sourcePrNumber} — ${row.sourcePrTitle}
+- PR URL: ${row.sourcePrUrl}
+- Head commit when proposed: \`${row.sourceHeadSha.slice(0, 7)}\`
+- Proposed category: ${row.category} · Flagged as: ${row.source}
+
+<!-- prr-suggest:${row.dedupKey} -->
+`
+}
+
+// `gh issue create` prints the new issue's URL; pull the number out of it.
+function parseIssueNumber(out) {
+  const m = (out || "").match(/\/issues\/(\d+)/)
+  return m ? Number(m[1]) : undefined
+}
+
+// Crash-safety dedup: if an issue carrying this proposal's marker already exists
+// on GitHub (we created it but died before markOpened), adopt its number instead
+// of filing a second one. Best-effort — a miss just falls through to create, and
+// the in-Convex dedupKey already prevents duplicate rows.
+async function findIssueByMarker(repo, dedupKey) {
+  const { code, out } = await run("gh", [
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "all",
+    "--search",
+    dedupKey,
+    "--json",
+    "number,body",
+    "--limit",
+    "20",
+  ])
+  if (code !== 0) return undefined
+  try {
+    const arr = JSON.parse(out)
+    const marker = `prr-suggest:${dedupKey}`
+    return arr.find((i) => typeof i.body === "string" && i.body.includes(marker))?.number
+  } catch {
+    return undefined
+  }
+}
+
+// The state-role labels currently on a GitHub issue (so label sync only removes
+// the ones actually present — `gh issue edit --remove-label` errors otherwise).
+async function currentStateLabels(repo, issueNumber) {
+  const { code, out } = await run("gh", [
+    "issue",
+    "view",
+    String(issueNumber),
+    "--repo",
+    repo,
+    "--json",
+    "labels",
+  ])
+  if (code !== 0) return []
+  try {
+    return (JSON.parse(out).labels ?? [])
+      .map((l) => l.name)
+      .filter((n) => STATE_LABELS.includes(n))
+  } catch {
+    return []
+  }
+}
+
+async function recordSuggestionError(row, error) {
+  await client
+    .mutation(api.suggestedIssues.recordWorkerError, { id: row._id, error })
+    .catch((e) => log(`recordWorkerError error #${row.sourcePrNumber}:`, String(e)))
+}
+
+// Gate 1: file an approved proposal as a needs-triage GitHub issue, then mark it
+// opened (which stamps the issue number + needs-triage as the applied label).
+async function openSuggestedIssue(row) {
+  const id = row._id
+  if (processingSuggestions.has(id)) return
+  processingSuggestions.add(id)
+  try {
+    const existing = await findIssueByMarker(row.repo, row.dedupKey)
+    if (existing != null) {
+      log(`↺ proposal already on GitHub as ${row.repo}#${existing} — adopting`)
+      await client.mutation(api.suggestedIssues.markOpened, { id, issueNumber: existing })
+      return
+    }
+    await ensureLabel(row.repo, "needs-triage")
+    const { code, out, err } = await run("gh", [
+      "issue",
+      "create",
+      "--repo",
+      row.repo,
+      "--title",
+      row.title,
+      "--body",
+      suggestedIssueBody(row),
+      "--label",
+      "needs-triage",
+    ])
+    if (code !== 0) {
+      const reason = (err || "").trim().split("\n").pop() || `gh issue create exited ${code}`
+      log(`✗ open issue failed ${row.repo} «${row.title}»: ${reason}`)
+      await recordSuggestionError(row, `gh issue create: ${reason}`)
+      return
+    }
+    const issueNumber = parseIssueNumber(out)
+    if (issueNumber == null) {
+      await recordSuggestionError(row, `could not parse issue number from: ${(out || "").trim().slice(0, 200)}`)
+      return
+    }
+    log(`✓ opened ${row.repo}#${issueNumber} (needs-triage) from PR #${row.sourcePrNumber}`)
+    await client.mutation(api.suggestedIssues.markOpened, { id, issueNumber })
+  } catch (e) {
+    await recordSuggestionError(row, String(e))
+  } finally {
+    processingSuggestions.delete(id)
+  }
+}
+
+// Gate 2: propagate the human's triage-label choice to the real GitHub issue —
+// add the desired label, remove whichever other state labels are present, then
+// mark it applied. This is what hands a follow-up to the solver (ready-for-agent).
+async function syncSuggestedLabel(row) {
+  const id = row._id
+  if (processingSuggestions.has(id)) return
+  if (row.issueNumber == null || row.label == null) return
+  processingSuggestions.add(id)
+  try {
+    const desired = row.label
+    await ensureLabel(row.repo, desired)
+    const present = await currentStateLabels(row.repo, row.issueNumber)
+    const remove = present.filter((l) => l !== desired)
+    const args = [
+      "issue",
+      "edit",
+      String(row.issueNumber),
+      "--repo",
+      row.repo,
+      "--add-label",
+      desired,
+    ]
+    for (const l of remove) args.push("--remove-label", l)
+    const { code, err } = await run("gh", args)
+    if (code !== 0) {
+      const reason = (err || "").trim().split("\n").pop() || `gh issue edit exited ${code}`
+      log(`✗ label sync failed ${row.repo}#${row.issueNumber}: ${reason}`)
+      await recordSuggestionError(row, `gh issue edit: ${reason}`)
+      return
+    }
+    log(`✓ ${row.repo}#${row.issueNumber} label → ${desired}`)
+    await client.mutation(api.suggestedIssues.markLabelApplied, { id, label: desired })
+  } catch (e) {
+    await recordSuggestionError(row, String(e))
+  } finally {
+    processingSuggestions.delete(id)
+  }
+}
+
 // ── subscriptions ────────────────────────────────────────────────────────────
 client.onUpdate(api.reviews.claimable, {}, (rows) => {
   latestClaimable = rows
   pump()
+})
+
+// Approved proposals to file on GitHub (gate 1), and opened issues whose label the
+// human changed and we haven't propagated yet (gate 2). The in-flight guard means
+// a re-fire while one is mid-create/mid-edit is a no-op.
+client.onUpdate(api.suggestedIssues.approvedToOpen, {}, (rows) => {
+  for (const row of rows) {
+    openSuggestedIssue(row).catch((e) => log(`openSuggestedIssue error #${row.sourcePrNumber}:`, String(e)))
+  }
+})
+client.onUpdate(api.suggestedIssues.labelToSync, {}, (rows) => {
+  for (const row of rows) {
+    syncSuggestedLabel(row).catch((e) => log(`syncSuggestedLabel error #${row.sourcePrNumber}:`, String(e)))
+  }
 })
 
 // The dashboard-owned watch list. Each change refreshes our copy and, when the

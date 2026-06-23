@@ -10,6 +10,7 @@ import {
   GitPullRequest,
   GitPullRequestClosed,
   Hand,
+  Inbox,
   ListFilter,
   Loader2,
   type LucideIcon,
@@ -45,6 +46,7 @@ import {
 import { MobileView } from "./mobile/MobileView"
 import { useReadOnly } from "./read-only"
 import { SharePanel } from "./SharePanel"
+import { FollowUpsDesktop, FollowUpsMobile } from "./follow-ups/FollowUps"
 
 type AddResult = "added" | "exists" | "invalid" | "full"
 function RepoSegmented({
@@ -1097,6 +1099,107 @@ function ReviewConsole({
   )
 }
 
+// ── top-level nav (Reviews ⇄ Follow-ups) ─────────────────────────────────────
+// The console is two views behind one chrome: the existing PR-review board and
+// the PR-follow-ups inbox. Desktop gets a slim left rail; below the narrow
+// breakpoint both collapse to a bottom tab bar (mobile-native).
+type View = "reviews" | "follow-ups"
+const VIEW_KEY = "prr.view"
+
+// Remember the last view across reloads (a view preference, like useOpenOnly).
+function useView() {
+  const [view, setView] = useState<View>(() =>
+    typeof window !== "undefined" && window.localStorage.getItem(VIEW_KEY) === "follow-ups"
+      ? "follow-ups"
+      : "reviews",
+  )
+  useEffect(() => {
+    if (typeof window !== "undefined") window.localStorage.setItem(VIEW_KEY, view)
+  }, [view])
+  return [view, setView] as const
+}
+
+function NavLogo() {
+  return (
+    <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-zinc-800 bg-zinc-950">
+      <GitPullRequest className="size-4 text-sky-300" />
+    </div>
+  )
+}
+
+function RailBtn({
+  active,
+  onClick,
+  icon: Icon,
+  label,
+  count = 0,
+}: {
+  active: boolean
+  onClick: () => void
+  icon: LucideIcon
+  label: string
+  count?: number
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-pressed={active}
+      className={cn(
+        "relative flex size-10 items-center justify-center rounded-md border transition",
+        active
+          ? "border-zinc-700 bg-zinc-800 text-zinc-100"
+          : "border-transparent text-zinc-500 hover:bg-zinc-900 hover:text-zinc-200",
+      )}
+    >
+      <Icon className="size-5" />
+      {count > 0 && (
+        <span className="absolute -right-1 -top-1 inline-flex min-w-[1rem] items-center justify-center rounded-full border border-[#080809] bg-amber-400 px-1 text-[10px] font-bold text-zinc-900">
+          {count}
+        </span>
+      )}
+    </button>
+  )
+}
+
+function BottomTab({
+  active,
+  onClick,
+  icon: Icon,
+  label,
+  count = 0,
+}: {
+  active: boolean
+  onClick: () => void
+  icon: LucideIcon
+  label: string
+  count?: number
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-medium transition",
+        active ? "text-amber-200" : "text-zinc-500",
+      )}
+    >
+      <span className="relative">
+        <Icon className="size-5" />
+        {count > 0 && (
+          <span className="absolute -right-2.5 -top-1.5 inline-flex min-w-[0.9rem] items-center justify-center rounded-full bg-amber-400 px-1 text-[9px] font-bold text-zinc-900">
+            {count}
+          </span>
+        )}
+      </span>
+      {label}
+    </button>
+  )
+}
+
 export default function App() {
   const prsData = useQuery(api.reviews.prs)
   const reposData = useQuery(api.repos.list)
@@ -1106,6 +1209,10 @@ export default function App() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [removeError, setRemoveError] = useState<string | null>(null)
   const isNarrow = useIsNarrowViewport()
+  const [view, setView] = useView()
+  // The pending-decision count drives the Follow-ups nav badge. A tiny dedicated
+  // query so the Reviews view shows it without loading the whole inbox.
+  const pending = useQuery(api.suggestedIssues.pendingCount) ?? 0
 
   // Clearing the stale remove banner on any deliberate navigation/add keeps a
   // failed-remove message from outliving its relevance across unrelated actions.
@@ -1168,63 +1275,96 @@ export default function App() {
 
   // Below the breakpoint the desktop two-pane layout can't breathe, so the app
   // hands off to a purpose-built mobile view (drill-down list → PR detail) rather
-  // than collapsing the panes into one long scroll. h-dvh (not h-screen/100vh) so
-  // the bottom sheet isn't clipped behind a mobile browser's retracting toolbar.
+  // than collapsing the panes into one long scroll, with a bottom tab bar to swap
+  // between Reviews and Follow-ups. h-dvh (not h-screen/100vh) so the bottom sheet
+  // and tab bar aren't clipped behind a mobile browser's retracting toolbar.
   if (isNarrow) {
     return (
       <div className="flex h-dvh flex-col overflow-hidden bg-[#080809] text-zinc-100">
-        {loading ? (
-          <div className="flex flex-1 items-center justify-center gap-2 text-sm text-zinc-500">
-            <Loader2 className="size-4 animate-spin" />
-            Loading reviews…
-          </div>
-        ) : (
-          <MobileView prs={prs} />
-        )}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {view === "follow-ups" ? (
+            <FollowUpsMobile />
+          ) : loading ? (
+            <div className="flex flex-1 items-center justify-center gap-2 text-sm text-zinc-500">
+              <Loader2 className="size-4 animate-spin" />
+              Loading reviews…
+            </div>
+          ) : (
+            <MobileView prs={prs} />
+          )}
+        </div>
+        <nav className="flex shrink-0 border-t border-zinc-800/80">
+          <BottomTab active={view === "reviews"} onClick={() => setView("reviews")} icon={GitPullRequest} label="Reviews" />
+          <BottomTab
+            active={view === "follow-ups"}
+            onClick={() => setView("follow-ups")}
+            icon={Inbox}
+            label="Follow-ups"
+            count={pending}
+          />
+        </nav>
       </div>
     )
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#080809] text-zinc-100">
-      <header className="sticky top-0 z-20 shrink-0 border-b border-zinc-800/80 bg-[#080809]/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center gap-2 px-4 py-3">
-          <div className="flex size-8 items-center justify-center rounded-md border border-zinc-800 bg-zinc-950">
-            <GitPullRequest className="size-4 text-sky-300" />
-          </div>
+    <div className="flex h-screen overflow-hidden bg-[#080809] text-zinc-100">
+      {/* Slim icon rail: Reviews (the board) ⇄ Follow-ups (the inbox). */}
+      <aside className="flex w-14 shrink-0 flex-col items-center gap-1.5 border-r border-zinc-800/80 py-3">
+        <div className="mb-2">
+          <NavLogo />
+        </div>
+        <RailBtn active={view === "reviews"} onClick={() => setView("reviews")} icon={GitPullRequest} label="Reviews" />
+        <RailBtn
+          active={view === "follow-ups"}
+          onClick={() => setView("follow-ups")}
+          icon={Inbox}
+          label="Follow-ups"
+          count={pending}
+        />
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-20 flex shrink-0 items-center gap-2 border-b border-zinc-800/80 bg-[#080809]/95 px-4 py-3 backdrop-blur">
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-zinc-100">PR Review Console</div>
-            <div className="truncate text-xs text-zinc-600">
-              Claude Code and Codex review loops
+            <div className="truncate text-sm font-semibold text-zinc-100">
+              {view === "follow-ups" ? "PR Follow-ups" : "PR Review Console"}
             </div>
+            {view === "reviews" && (
+              <div className="truncate text-xs text-zinc-600">Claude Code and Codex review loops</div>
+            )}
           </div>
           <div className="ml-auto shrink-0">
             <SharePanel />
           </div>
-        </div>
-      </header>
+        </header>
 
-      <main className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col px-3 py-4">
-        {loading ? (
-          <div className="flex min-h-[60vh] items-center justify-center gap-2 text-sm text-zinc-500">
-            <Loader2 className="size-4 animate-spin" />
-            Loading reviews…
-          </div>
-        ) : (
-          <ReviewConsole
-            allPrs={prs}
-            repoFiltered={repoFiltered}
-            repos={repos}
-            activeRepo={activeRepo}
-            selectedPr={selectedPr}
-            onRepoChange={handleRepoChange}
-            onSelect={setSelectedKey}
-            onAddRepo={handleAddRepo}
-            onRemoveRepo={handleRemoveRepo}
-            removeError={removeError}
-          />
-        )}
-      </main>
+        <main className="flex min-h-0 flex-1 flex-col">
+          {view === "follow-ups" ? (
+            <FollowUpsDesktop />
+          ) : loading ? (
+            <div className="flex min-h-[60vh] flex-1 items-center justify-center gap-2 text-sm text-zinc-500">
+              <Loader2 className="size-4 animate-spin" />
+              Loading reviews…
+            </div>
+          ) : (
+            <div className="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col px-3 py-4">
+              <ReviewConsole
+                allPrs={prs}
+                repoFiltered={repoFiltered}
+                repos={repos}
+                activeRepo={activeRepo}
+                selectedPr={selectedPr}
+                onRepoChange={handleRepoChange}
+                onSelect={setSelectedKey}
+                onAddRepo={handleAddRepo}
+                onRemoveRepo={handleRemoveRepo}
+                removeError={removeError}
+              />
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   )
 }

@@ -23,6 +23,92 @@ export const logKind = v.union(
   v.literal("error"),
 )
 
+// ── follow-up suggestions ────────────────────────────────────────────────────
+// A `suggestedIssues` row is a *proposal* a pr-feature agent emitted at the
+// unattended wrap-up of a PR it built — out-of-scope work it deferred, a
+// limitation it disclosed, a tangent it noticed. It is NOT a GitHub issue yet:
+// the console is the async approval inbox, and only on a human "Open" does the
+// worker file it (Convex has no GitHub auth — the worker does, exactly like
+// reviews). The lifecycle is two deliberate human gates, no auto-cascade:
+//   suggested  : proposed by the agent, awaiting a human decision
+//   approved   : human said "open it" — the worker will `gh issue create` it
+//   opened      : filed on GitHub (issueNumber set), labelled needs-triage
+//   dismissed   : human said no — kept as history, never opened
+// Gate 2 lives on an `opened` row: the human picks a triage `label`, and the
+// worker propagates it to the real GitHub issue (the solver gates on the real
+// `ready-for-agent` label, so this is not cosmetic).
+export const suggestionStatus = v.union(
+  v.literal("suggested"),
+  v.literal("approved"),
+  v.literal("opened"),
+  v.literal("dismissed"),
+)
+
+// What kind of work the follow-up is.
+export const suggestionCategory = v.union(
+  v.literal("bug"),
+  v.literal("enhancement"),
+  v.literal("chore"),
+)
+
+// How the agent surfaced it while building the PR (drives the source tag).
+export const suggestionSource = v.union(
+  v.literal("deferred-p2"),
+  v.literal("disclosed-limitation"),
+  v.literal("build-tangent"),
+)
+
+// The triage state-role labels (canonical names; the real GitHub label strings
+// are per-repo tracker config). An opened follow-up always starts needs-triage;
+// the human promotes it. `ready-for-agent` is what the autonomous solver loop
+// gates on — promotion is the deliberate second gate.
+export const triageLabel = v.union(
+  v.literal("needs-triage"),
+  v.literal("ready-for-agent"),
+  v.literal("ready-for-human"),
+  v.literal("wontfix"),
+)
+
+// The non-system columns of a `suggestedIssues` row.
+export const suggestedIssueFields = {
+  // source PR provenance — the PR the agent built when it proposed this
+  repo: v.string(), // "owner/name"
+  sourcePrNumber: v.number(),
+  sourceHeadSha: v.string(), // head SHA at proposal time
+  sourcePrTitle: v.string(),
+  sourcePrUrl: v.string(),
+  // the proposal itself
+  title: v.string(),
+  body: v.string(), // markdown
+  category: suggestionCategory,
+  source: suggestionSource,
+  files: v.array(v.string()), // "files to touch" the brief points a fresh agent at
+  // stable idempotency key derived from (repo, sourcePrNumber, title): an agent
+  // re-run, or a second pr-feature session, collapses onto the same row instead
+  // of double-filing. Also embedded as a marker in the opened issue body so the
+  // worker can dedup against GitHub (crash-safety between create and markOpened).
+  dedupKey: v.string(),
+  status: suggestionStatus,
+  proposedBy: v.string(), // agent/host label, like reviews.worker
+  createdAt: v.number(),
+  // human decision (gate 1): when/who approved or dismissed
+  decidedAt: v.optional(v.number()),
+  decidedBy: v.optional(v.string()),
+  // set by the worker on `opened` — the filed GitHub issue
+  issueNumber: v.optional(v.number()),
+  // desired triage label (gate 2). On open it's needs-triage; the console picker
+  // changes it and the worker propagates the change to GitHub.
+  label: v.optional(triageLabel),
+  // the label the worker last actually applied on GitHub — drives label sync:
+  // a row with label !== appliedLabel needs the worker to `gh issue edit` it.
+  appliedLabel: v.optional(triageLabel),
+  // worker-loop safety: bounded retries + last error for the GitHub side-effect
+  // (issue create / label edit), so a persistent gh failure surfaces instead of
+  // spinning the subscription forever.
+  attempts: v.optional(v.number()),
+  error: v.optional(v.string()),
+}
+
 // One commit in a PR push, captured by the worker from GitHub (the dashboard has
 // no GitHub auth of its own) — the commits that landed in a single review turn.
 export const commitInfo = v.object({
@@ -123,4 +209,13 @@ export default defineSchema({
     repo: v.string(),
     updatedAt: v.number(),
   }),
+
+  // Follow-up issue proposals from pr-feature agents — see suggestedIssueFields.
+  suggestedIssues: defineTable(suggestedIssueFields)
+    // inbox (newest-first within a status) + the worker's claimable-style reads
+    .index("by_status", ["status", "createdAt"])
+    // dedup + lineage: every suggestion for a source PR (prefix on repo)
+    .index("by_source_pr", ["repo", "sourcePrNumber"])
+    // idempotency: the `suggest` mutation collapses a re-proposal onto its row
+    .index("by_dedup", ["dedupKey"]),
 })

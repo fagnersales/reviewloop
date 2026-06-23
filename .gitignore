@@ -2,6 +2,7 @@ node_modules
 dist
 .env.local
 .DS_Store
+*.swp
 worker/config.local.json
 worker/worker.out
 worker/worker.pid

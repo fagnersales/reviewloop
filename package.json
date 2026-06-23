@@ -11,11 +11,13 @@
     "preview": "vite preview",
     "worker": "node worker/index.mjs",
     "await": "node worker/await.mjs",
-    "ack": "node worker/ack.mjs"
+    "ack": "node worker/ack.mjs",
+    "suggest": "node worker/suggest.mjs"
   },
   "bin": {
     "prr-await": "worker/await.mjs",
-    "prr-ack": "worker/ack.mjs"
+    "prr-ack": "worker/ack.mjs",
+    "prr-suggest": "worker/suggest.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
