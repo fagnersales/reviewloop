@@ -5,7 +5,8 @@
 // side. Read-only (the public build) hides every write affordance but keeps the
 // reader — including Copy brief, which is client-only.
 import { type ReactNode, useEffect, useMemo, useState } from "react"
-import { useMutation, useQuery } from "convex/react"
+import { useMutation } from "convex/react"
+import { useQuery } from "convex-helpers/react/cache/hooks"
 import {
   ArrowUpRight,
   Check,

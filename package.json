@@ -23,6 +23,7 @@
   "dependencies": {
     "clsx": "^2.1.1",
     "convex": "^1.41.0",
+    "convex-helpers": "^0.1.120",
     "lucide-react": "^1.17.0",
     "markdown-to-jsx": "^9.8.2",
     "qrcode.react": "^4.2.0",

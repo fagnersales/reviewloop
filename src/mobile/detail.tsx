@@ -3,7 +3,7 @@
 // card). These mirror the desktop EventDetail / Timeline / CommitsPanel, tuned for
 // a single narrow column and touch targets.
 import { useMemo } from "react"
-import { useQuery } from "convex/react"
+import { useQuery } from "convex-helpers/react/cache/hooks"
 import {
   AlertTriangle,
   Clock3,

@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react"
-import { useQuery } from "convex/react"
+import { useQuery } from "convex-helpers/react/cache/hooks"
 import { GitPullRequest, Loader2, Lock } from "lucide-react"
 import { api } from "../convex/_generated/api"
 import {

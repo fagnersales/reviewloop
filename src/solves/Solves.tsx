@@ -5,7 +5,7 @@
 // and the only human action (merging the PR) happens on GitHub — so there are no
 // action affordances, just status. Mirrors the Follow-ups view's structure.
 import { type ReactNode, useEffect, useMemo, useState } from "react"
-import { useQuery } from "convex/react"
+import { useQuery } from "convex-helpers/react/cache/hooks"
 import {
   AlertTriangle,
   ArrowUpRight,
