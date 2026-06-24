@@ -7,6 +7,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery } from "convex/react"
 import {
+  ArrowUpRight,
   Check,
   ChevronLeft,
   Copy,
@@ -23,13 +24,17 @@ import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
 import { ReviewReport, repoShort } from "../review/kit"
 import { useReadOnly } from "../read-only"
+import { FilterDropdown, type FilterOption } from "../ui/FilterDropdown"
 import {
   CATEGORY,
   CategoryChip,
+  type SugCategory,
+  type SugStatus,
   type Suggestion,
   type TriageLabel,
   LabelChip,
   LabelPicker,
+  SOURCE_META,
   SourceTag,
   StateDot,
   issueBrief,
@@ -341,17 +346,6 @@ function FilterBar({
   )
 }
 
-function EmptyDetail() {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
-      <span className="flex size-11 items-center justify-center rounded-full border border-zinc-800 text-zinc-600">
-        <Inbox className="size-5" />
-      </span>
-      <p className="text-sm text-zinc-500">Select a follow-up to read it.</p>
-    </div>
-  )
-}
-
 function Loading() {
   return (
     <div className="flex flex-1 items-center justify-center gap-2 text-sm text-zinc-500">
@@ -397,50 +391,293 @@ function List({
   )
 }
 
+// ── desktop design atoms ─────────────────────────────────────────────────────
+// The desktop view wears the console's design palette: status as a coloured mono
+// label/pill, category as a coloured label/chip, and triage labels as a row of
+// mono toggle buttons. (Mobile keeps the icon-pill kit atoms above.)
+const FU_STATUS: Record<SugStatus, { label: string; text: string; bg: string; border: string }> = {
+  suggested: { label: "SUGGESTED", text: "text-[#fcd34d]", bg: "bg-[#e3b341]/10", border: "border-[#e3b341]/30" },
+  approved: { label: "APPROVED", text: "text-[#86efac]", bg: "bg-[#3fb950]/10", border: "border-[#3fb950]/30" },
+  opened: { label: "OPENED", text: "text-[#7dd3fc]", bg: "bg-[#38bdf8]/10", border: "border-[#38bdf8]/30" },
+  dismissed: { label: "DISMISSED", text: "text-zinc-400", bg: "bg-inset", border: "border-edge2" },
+}
+const FU_CAT_TEXT: Record<SugCategory, string> = {
+  bug: "text-[#fca5a5]",
+  enhancement: "text-[#7dd3fc]",
+  chore: "text-zinc-400",
+}
+const FU_CAT_CHIP: Record<SugCategory, { text: string; bg: string; border: string }> = {
+  bug: { text: "text-[#fca5a5]", bg: "bg-[#f85149]/10", border: "border-[#f85149]/30" },
+  enhancement: { text: "text-[#7dd3fc]", bg: "bg-[#38bdf8]/10", border: "border-[#38bdf8]/30" },
+  chore: { text: "text-zinc-400", bg: "bg-rowsel", border: "border-edge2" },
+}
+const TRIAGE: { id: TriageLabel; text: string; border: string }[] = [
+  { id: "needs-triage", text: "text-[#fcd34d]", border: "border-[#e3b341]/40" },
+  { id: "ready-for-agent", text: "text-[#86efac]", border: "border-[#3fb950]/50" },
+  { id: "ready-for-human", text: "text-[#7dd3fc]", border: "border-[#38bdf8]/40" },
+  { id: "wontfix", text: "text-zinc-400", border: "border-edgehi" },
+]
+
+const FU_FILTERS: { value: SugStatus | "all"; label: string }[] = [
+  { value: "all", label: "All follow-ups" },
+  { value: "suggested", label: "Suggested" },
+  { value: "approved", label: "Approved" },
+  { value: "opened", label: "Opened" },
+  { value: "dismissed", label: "Dismissed" },
+]
+
+function FuRow({ s, selected, onSelect }: { s: Suggestion; selected: boolean; onSelect: () => void }) {
+  const st = FU_STATUS[s.status]
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "w-full rounded-[6px] border px-[11px] py-[9px] text-left transition-colors",
+        selected ? "border-edge2 bg-rowsel" : "border-transparent hover:bg-white/[0.02]",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className={cn("min-w-0 flex-1 truncate text-[13px] font-medium", selected ? "text-zinc-100" : "text-zinc-300")}>
+          {s.title}
+        </span>
+        {s.status !== "suggested" && (
+          <span className={cn("shrink-0 font-mono text-[9.5px] font-semibold tracking-[0.06em]", st.text)}>{st.label}</span>
+        )}
+      </div>
+      <div className="mt-[7px] flex items-center justify-between gap-2 font-mono text-[10px] text-zinc-500">
+        <span className="min-w-0 truncate">
+          {repoShort(s.repo)}  #{s.sourcePrNumber}
+        </span>
+        <span className={cn("shrink-0", FU_CAT_TEXT[s.category])}>{s.category}</span>
+      </div>
+    </button>
+  )
+}
+
+function FuDetail({ s, actions }: { s: Suggestion; actions: Actions }) {
+  const readOnly = useReadOnly()
+  const st = FU_STATUS[s.status]
+  const chip = FU_CAT_CHIP[s.category]
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-line px-[18px] py-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={cn("rounded border px-2 py-[3px] font-mono text-[10px]", chip.text, chip.bg, chip.border)}>
+            {s.category}
+          </span>
+          <span className="font-mono text-[10px] text-zinc-500">{SOURCE_META[s.source].label}</span>
+          {s.status !== "suggested" && (
+            <span className={cn("rounded border px-2 py-[3px] font-mono text-[10px] font-medium", st.text, st.bg, st.border)}>
+              {st.label}
+            </span>
+          )}
+        </div>
+        <h2 className="mt-3 text-[17px] font-semibold leading-snug text-zinc-100">{s.title}</h2>
+        <div className="mt-[9px] font-mono text-[11px] text-zinc-500">
+          {s.repo}  #{s.sourcePrNumber}
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-[18px] py-4">
+        <ReviewReport report={s.body} />
+
+        {s.files.length > 0 && (
+          <>
+            <div className="mb-2.5 mt-4 font-mono text-[9.5px] uppercase tracking-[0.14em] text-zinc-600">Files to touch</div>
+            <div className="flex flex-wrap gap-[7px]">
+              {s.files.map((f) => (
+                <span key={f} className="rounded border border-edge bg-inset px-2.5 py-1 font-mono text-[11px] text-zinc-400">
+                  {f}
+                </span>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="my-4 h-px bg-line" />
+
+        {/* action area — gated by status, hidden on the read-only public build */}
+        {s.status === "suggested" &&
+          (readOnly ? (
+            <span className="text-xs text-zinc-600">Awaiting a decision</span>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <span className="text-xs text-zinc-500">Awaiting your decision</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => actions.dismiss(s)}
+                  className="rounded border border-edge2 px-3.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:border-edgehi hover:text-zinc-200"
+                >
+                  Dismiss
+                </button>
+                <button
+                  type="button"
+                  onClick={() => actions.open(s)}
+                  className="inline-flex items-center gap-1.5 rounded border border-accent-strong bg-accent px-3.5 py-1.5 text-xs font-medium text-[#08160c] transition-colors hover:bg-accent-strong"
+                >
+                  <Check className="size-3.5" strokeWidth={2.4} />
+                  Open it
+                </button>
+              </div>
+            </div>
+          ))}
+
+        {s.status === "approved" && (
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <span className="inline-flex items-center gap-2 text-xs text-[#86efac]">
+              <Loader2 className="size-3.5 animate-spin" />
+              Queued — the worker will file it on GitHub
+            </span>
+            {!readOnly && (
+              <button
+                type="button"
+                onClick={() => actions.undo(s)}
+                className="rounded border border-edge2 px-3.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:border-edgehi hover:text-zinc-200"
+              >
+                Undo
+              </button>
+            )}
+          </div>
+        )}
+
+        {s.status === "opened" && (
+          <>
+            {s.issueNumber != null && (
+              <a
+                href={issueUrl(s.repo, s.issueNumber)}
+                target="_blank"
+                rel="noreferrer"
+                className="mb-3 inline-flex items-center gap-2 text-xs text-[#7dd3fc] hover:underline"
+              >
+                <ArrowUpRight className="size-3.5" />
+                Issue #{s.issueNumber} filed on GitHub
+              </a>
+            )}
+            <div className="mb-2.5 font-mono text-[9.5px] uppercase tracking-[0.14em] text-zinc-600">Triage label</div>
+            <div className="flex flex-wrap items-center gap-[7px]">
+              {TRIAGE.map((t) => {
+                const active = s.label === t.id
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    disabled={readOnly}
+                    onClick={() => !readOnly && actions.setLabel(s, t.id)}
+                    className={cn(
+                      "rounded border px-2.5 py-[5px] font-mono text-[10px] transition-colors",
+                      active
+                        ? cn("bg-white/[0.05]", t.text, t.border)
+                        : "border-line2 bg-[#0d0d0f] text-zinc-600",
+                      !readOnly && !active && "hover:text-zinc-400",
+                    )}
+                  >
+                    {t.id}
+                  </button>
+                )
+              })}
+            </div>
+          </>
+        )}
+
+        {s.status === "dismissed" && (
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <span className="text-xs text-zinc-600">Dismissed — kept as history, never opened</span>
+            {!readOnly && (
+              <button
+                type="button"
+                onClick={() => actions.undo(s)}
+                className="rounded border border-edge2 px-3.5 py-1.5 text-xs font-medium text-zinc-400 transition-colors hover:border-edgehi hover:text-zinc-200"
+              >
+                Restore
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FuEmptyDetail() {
+  return (
+    <div className="flex h-full items-center justify-center p-6 text-center text-[13px] text-zinc-600">
+      Select a follow-up to review the proposal.
+    </div>
+  )
+}
+
 // ── desktop: two-pane ─────────────────────────────────────────────────────────
 export function FollowUpsDesktop() {
   const suggestions = useQuery(api.suggestedIssues.inbox)
   const actions = useFollowUpActions()
-  const { items, shown, pendingOnly, setPendingOnly } = useInboxState(suggestions)
+  const [filter, setFilter] = useState<SugStatus | "all">("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
-  // Land on the first follow-up so the pane is never empty; keep the user's pick
-  // stable as live data streams in, but drop a selection that vanished.
+  const items = useMemo(() => suggestions ?? [], [suggestions])
+  const shown = useMemo(
+    () => (filter === "all" ? items : items.filter((s) => s.status === filter)),
+    [items, filter],
+  )
+
+  const options = useMemo<FilterOption<SugStatus | "all">[]>(
+    () =>
+      FU_FILTERS.map((f) => ({
+        value: f.value,
+        label: f.label,
+        count: f.value === "all" ? items.length : items.filter((s) => s.status === f.value).length,
+      })),
+    [items],
+  )
+
+  // Land on the first follow-up in the current filter so the pane is never empty;
+  // keep the user's pick stable as live data streams in, but drop one that left.
   useEffect(() => {
-    if (items.length === 0) {
+    if (shown.length === 0) {
       if (selectedId !== null) setSelectedId(null)
       return
     }
-    if (!selectedId || !items.some((s) => s._id === selectedId)) setSelectedId(items[0]._id)
-  }, [items, selectedId])
+    if (!selectedId || !shown.some((s) => s._id === selectedId)) setSelectedId(shown[0]._id)
+  }, [shown, selectedId])
 
-  const selected = items.find((s) => s._id === selectedId) ?? null
+  const selected = shown.find((s) => s._id === selectedId) ?? null
 
   if (suggestions === undefined) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        <Loading />
-      </div>
-    )
+    return <Loading />
   }
 
   return (
-    <div className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 grid-cols-[22rem_minmax(0,1fr)] grid-rows-1 gap-4 px-3 py-4">
-      <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/70">
-        <div className="shrink-0 border-b border-zinc-800 p-3">
-          <FilterBar
-            shown={shown.length}
-            total={items.length}
-            pendingOnly={pendingOnly}
-            onToggle={() => setPendingOnly((v) => !v)}
+    <div className="grid min-h-0 flex-1 grid-cols-[300px_minmax(0,1fr)] gap-4 px-5 py-[18px]">
+      <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-line2 bg-panel">
+        <div className="flex shrink-0 items-center border-b border-line px-2.5 py-2">
+          <FilterDropdown
+            icon={<Inbox className="size-3.5" />}
+            heading="Filter by status"
+            options={options}
+            value={filter}
+            onChange={setFilter}
           />
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <List shown={shown} selectedId={selectedId} onSelect={setSelectedId} pendingOnly={pendingOnly} />
+        <div className="flex shrink-0 items-center gap-[7px] px-3 pb-1.5 pt-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">
+          <Inbox className="size-3" />
+          Follow-ups
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2.5 pt-1.5">
+          <div className="flex flex-col gap-[5px]">
+            {shown.map((s) => (
+              <FuRow key={s._id} s={s} selected={s._id === selectedId} onSelect={() => setSelectedId(s._id)} />
+            ))}
+            {shown.length === 0 && (
+              <div className="rounded-md border border-dashed border-edge p-[18px] text-center text-xs text-zinc-600">
+                No follow-ups in this view.
+              </div>
+            )}
+          </div>
         </div>
       </section>
-      <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/70">
-        {selected ? <IssueDetail s={selected} actions={actions} /> : <EmptyDetail />}
+      <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-line2 bg-panel">
+        {selected ? <FuDetail s={selected} actions={actions} /> : <FuEmptyDetail />}
       </section>
     </div>
   )

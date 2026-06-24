@@ -8,6 +8,7 @@ import Markdown from "markdown-to-jsx"
 import {
   Activity,
   AlertTriangle,
+  Check,
   CheckCircle2,
   Clock3,
   GitCommit,
@@ -132,68 +133,85 @@ export function findingsLine(x: { p0?: number; p1?: number; p2?: number }) {
   return parts.join(" · ")
 }
 
-export type StatusDisplay = { label: string; icon: LucideIcon; tone: string; spin?: boolean }
+// The lifecycle state a PR row resolves to — the single source of truth for both
+// the (mobile) icon badge and the (desktop) design badges. The "reviewed" pass
+// fans out into three meanings the console exists to surface: an agent acked it
+// (someone's on it), it has blockers / unparseable counts and nobody's acked
+// (awaiting an agent — mirrors prr-await, which treats a parse miss as a blocker
+// so it never reads as clean), or it's clean (verified, ready to merge).
+export type StatusKey =
+  | "verified"
+  | "awaiting"
+  | "inprogress"
+  | "reviewing"
+  | "queued"
+  | "failed"
+  | "merged"
+  | "closed"
 
-export function statusDisplay(pr: Pr): StatusDisplay {
-  if (pr.prState === "merged")
-    return {
-      label: "Merged",
-      icon: GitMerge,
-      tone: "border-violet-400/25 bg-violet-400/10 text-violet-200",
-    }
-  if (pr.prState === "closed")
-    return {
-      label: "Closed",
-      icon: GitPullRequestClosed,
-      tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400",
-    }
+export function prStatusKey(pr: Pr): StatusKey {
+  if (pr.prState === "merged") return "merged"
+  if (pr.prState === "closed") return "closed"
   switch (pr.status) {
     case "reviewing":
-      return {
-        label: "Reviewing",
-        icon: Loader2,
-        tone: "border-sky-400/25 bg-sky-400/10 text-sky-200",
-        spin: true,
-      }
+      return "reviewing"
     case "queued":
-      return {
-        label: "Queued",
-        icon: Clock3,
-        tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400",
-      }
-    case "reviewed": {
-      // A reviewed pass an agent has acked = real, trustworthy "someone's on it".
-      if (pr.ackedAt != null)
-        return {
-          label: "In progress",
-          icon: Activity,
-          tone: "border-indigo-400/25 bg-indigo-400/10 text-indigo-200",
-        }
-      // Reviewed with blockers — or counts the worker couldn't parse (null != 0)
-      // — and no ack = nobody's picked it up. The signal the console exists to
-      // surface: this branch needs an agent. Mirrors prr-await, which treats an
-      // unparseable count as a blocker so a parse miss never reads as "clean"
-      // (the safe direction: a legacy countless row shows "Awaiting agent").
-      if (pr.p0 == null || pr.p1 == null || pr.p0 > 0 || pr.p1 > 0)
-        return {
-          label: "Awaiting agent",
-          icon: Hand,
-          tone: "border-amber-400/25 bg-amber-400/10 text-amber-200",
-        }
-      // Clean review (no blockers) = ready to merge, nothing to pick up.
-      return {
-        label: "Reviewed",
-        icon: CheckCircle2,
-        tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
-      }
-    }
+      return "queued"
     case "failed":
-      return {
-        label: "Failed",
-        icon: XCircle,
-        tone: "border-red-400/25 bg-red-400/10 text-red-200",
-      }
+      return "failed"
+    case "reviewed":
+      if (pr.ackedAt != null) return "inprogress"
+      if (pr.p0 == null || pr.p1 == null || pr.p0 > 0 || pr.p1 > 0) return "awaiting"
+      return "verified"
   }
+}
+
+export type StatusDisplay = { label: string; icon: LucideIcon; tone: string; spin?: boolean }
+
+// The legacy icon-pill badge (still used by the mobile view). Derived from
+// prStatusKey so the lifecycle logic lives in exactly one place.
+const STATUS_LEGACY: Record<StatusKey, StatusDisplay> = {
+  merged: { label: "Merged", icon: GitMerge, tone: "border-violet-400/25 bg-violet-400/10 text-violet-200" },
+  closed: { label: "Closed", icon: GitPullRequestClosed, tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400" },
+  reviewing: { label: "Reviewing", icon: Loader2, tone: "border-sky-400/25 bg-sky-400/10 text-sky-200", spin: true },
+  queued: { label: "Queued", icon: Clock3, tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400" },
+  inprogress: { label: "In progress", icon: Activity, tone: "border-indigo-400/25 bg-indigo-400/10 text-indigo-200" },
+  awaiting: { label: "Awaiting agent", icon: Hand, tone: "border-amber-400/25 bg-amber-400/10 text-amber-200" },
+  verified: { label: "Reviewed", icon: CheckCircle2, tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200" },
+  failed: { label: "Failed", icon: XCircle, tone: "border-red-400/25 bg-red-400/10 text-red-200" },
+}
+
+export function statusDisplay(pr: Pr): StatusDisplay {
+  return STATUS_LEGACY[prStatusKey(pr)]
+}
+
+// ── design-palette status + confidence metas (desktop console) ───────────────
+// Tailwind class fragments matching the design's exact hex: a colored uppercase
+// mono label + dot for list rows, and the same colors in a bordered pill for
+// detail headers. `pulse` marks the live states (reviewing / in-progress).
+export type ToneMeta = { label: string; text: string; dot: string; bg: string; border: string; pulse: boolean }
+
+export const STATUS_META: Record<StatusKey, ToneMeta> = {
+  verified: { label: "VERIFIED", text: "text-[#86efac]", dot: "bg-[#3fb950]", bg: "bg-[#3fb950]/10", border: "border-[#3fb950]/30", pulse: false },
+  awaiting: { label: "AWAITING AGENT", text: "text-[#fcd34d]", dot: "bg-[#e3b341]", bg: "bg-[#e3b341]/10", border: "border-[#e3b341]/30", pulse: false },
+  inprogress: { label: "IN PROGRESS", text: "text-[#c4b5fd]", dot: "bg-[#818cf8]", bg: "bg-[#818cf8]/10", border: "border-[#818cf8]/30", pulse: true },
+  reviewing: { label: "REVIEWING", text: "text-[#7dd3fc]", dot: "bg-[#38bdf8]", bg: "bg-[#38bdf8]/10", border: "border-[#38bdf8]/30", pulse: true },
+  queued: { label: "QUEUED", text: "text-zinc-400", dot: "bg-zinc-500", bg: "bg-inset", border: "border-edge2", pulse: false },
+  failed: { label: "FAILED", text: "text-[#fca5a5]", dot: "bg-[#f85149]", bg: "bg-[#f85149]/10", border: "border-[#f85149]/30", pulse: false },
+  merged: { label: "MERGED", text: "text-[#d8b4fe]", dot: "bg-[#a371f7]", bg: "bg-[#a371f7]/10", border: "border-[#a371f7]/30", pulse: false },
+  closed: { label: "CLOSED", text: "text-zinc-400", dot: "bg-zinc-600", bg: "bg-inset", border: "border-edge2", pulse: false },
+}
+
+export type ConfMeta = { text: string; color: string; bg: string; border: string; star: boolean }
+
+// Confidence (the review score): a starred decimal coloured by tier — red below
+// 2, amber below 4, green at/above 4. `—` (no star) when there's no score yet.
+export function confMeta(score?: number): ConfMeta {
+  if (score == null) return { text: "—", color: "text-zinc-600", bg: "bg-inset", border: "border-edge", star: false }
+  const text = score.toFixed(1)
+  if (score < 2) return { text, color: "text-[#fca5a5]", bg: "bg-[#f85149]/10", border: "border-[#f85149]/30", star: true }
+  if (score < 4) return { text, color: "text-[#fcd34d]", bg: "bg-[#e3b341]/10", border: "border-[#e3b341]/30", star: true }
+  return { text, color: "text-[#86efac]", bg: "bg-[#3fb950]/10", border: "border-[#3fb950]/30", star: true }
 }
 
 export function scoreTone(score?: number) {
@@ -394,6 +412,75 @@ export function EventGlyph({ kind }: { kind: EventKind }) {
       )}
     >
       <Icon className={cn("size-3.5", kind === "agent" && "animate-spin")} />
+    </span>
+  )
+}
+
+// ── design-palette atoms (desktop console) ──────────────────────────────────
+// List rows wear the status/confidence as bare coloured mono text + dot; detail
+// headers wear the same colours as a bordered pill.
+
+export function PrStatusText({ pr }: { pr: Pr }) {
+  const m = STATUS_META[prStatusKey(pr)]
+  return (
+    <span className={cn("inline-flex shrink-0 items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.06em]", m.text)}>
+      <span className={cn("size-[5px] shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
+      {m.label}
+    </span>
+  )
+}
+
+export function PrStatusPill({ pr }: { pr: Pr }) {
+  const m = STATUS_META[prStatusKey(pr)]
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 rounded border px-2.5 py-[3px] font-mono text-[10px] font-medium", m.text, m.bg, m.border)}>
+      <span className={cn("size-1.5 shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
+      {m.label}
+    </span>
+  )
+}
+
+export function ConfText({ score }: { score?: number }) {
+  const m = confMeta(score)
+  return (
+    <span className={cn("inline-flex shrink-0 items-center gap-0.5 font-mono text-[10px] font-semibold", m.color)}>
+      {m.star && <span>★</span>}
+      {m.text}
+    </span>
+  )
+}
+
+export function ConfPill({ score }: { score?: number }) {
+  const m = confMeta(score)
+  return (
+    <span className={cn("inline-flex items-center gap-1 rounded border px-2 py-[3px] font-mono text-[11px] font-semibold", m.color, m.bg, m.border)}>
+      {m.star && <span>★</span>}
+      {m.text}
+    </span>
+  )
+}
+
+// The review-loop node: a 27px circle, coloured per event kind. A review is a
+// green check, a commit/opening is neutral, ack/merge/fail carry their tone, and
+// an in-flight re-review spins.
+const LOOP_GLYPH: Record<EventKind, { icon: LucideIcon; cls: string; spin?: boolean }> = {
+  opened: { icon: GitPullRequest, cls: "border-edge2 bg-[#0d0d0f] text-zinc-500" },
+  commit: { icon: GitCommit, cls: "border-edge2 bg-[#0d0d0f] text-zinc-400" },
+  review: { icon: Check, cls: "border-[#3fb950]/40 bg-[#3fb950]/[0.12] text-[#86efac]" },
+  ack: { icon: Hand, cls: "border-[#818cf8]/40 bg-[#818cf8]/[0.12] text-[#c4b5fd]" },
+  agent: { icon: Loader2, cls: "border-[#38bdf8]/40 bg-[#38bdf8]/[0.12] text-[#7dd3fc]", spin: true },
+  queued: { icon: Clock3, cls: "border-edge2 bg-[#0d0d0f] text-zinc-400" },
+  merged: { icon: GitMerge, cls: "border-[#a371f7]/40 bg-[#a371f7]/[0.12] text-[#d8b4fe]" },
+  failed: { icon: AlertTriangle, cls: "border-[#f85149]/40 bg-[#f85149]/[0.12] text-[#fca5a5]" },
+  closed: { icon: GitPullRequestClosed, cls: "border-edge2 bg-[#0d0d0f] text-zinc-400" },
+}
+
+export function LoopGlyph({ kind }: { kind: EventKind }) {
+  const g = LOOP_GLYPH[kind]
+  const Icon = g.icon
+  return (
+    <span className={cn("relative z-10 flex size-[27px] shrink-0 items-center justify-center rounded-full border", g.cls)}>
+      <Icon className={cn("size-[13px]", g.spin && "animate-spin")} />
     </span>
   )
 }

@@ -1,5 +1,32 @@
 @import "tailwindcss";
 
+/* The console's design tokens. The surfaces/lines are a custom near-zinc dark
+   scale (the design's exact hex), exposed as Tailwind color utilities
+   (bg-panel, border-line2, …); text colors stay on the zinc scale since the
+   design's text hex map 1:1 onto it. The accent is GitHub green, not sky. */
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-accent: #3fb950;
+  --color-accent-strong: #2ea043;
+
+  --color-canvas: #0a0a0b;
+  --color-panel: #0c0c0e;
+  --color-elevated: #0e0e11;
+  --color-inset: #111114;
+  --color-sunken: #08080a;
+  --color-rowsel: #16161a;
+  --color-railsel: #1c1c20;
+
+  --color-line: #18181b;
+  --color-line2: #1d1d21;
+  --color-edge: #232328;
+  --color-edge2: #2a2a30;
+  --color-edge3: #26262b;
+  --color-edgehi: #3a3a42;
+}
+
 :root {
   color-scheme: dark;
 }
@@ -12,11 +39,28 @@ body,
 
 body {
   margin: 0;
-  background: #09090b;
-  color: #e4e4e7;
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0a0a0b;
+  color: #d4d4d8;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgba(63, 185, 80, 0.13);
+  color: #f4f4f5;
+}
+
+/* Thin, unobtrusive scrollbars to match the design's dense panels. */
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #26262b;
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* Tailwind v4's Preflight dropped the default `cursor: pointer` on buttons that
@@ -28,6 +72,34 @@ body {
   [role="button"]:not(:disabled) {
     cursor: pointer;
   }
+}
+
+/* Status-dot pulse for live states (reviewing / solving / in-progress) and the
+   soft entrance for the review-loop event detail. */
+@keyframes prr-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.prr-pulse {
+  animation: prr-pulse 1.5s ease-in-out infinite;
+}
+@keyframes prr-fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.prr-fade {
+  animation: prr-fade 0.25s ease both;
 }
 
 @keyframes pulse-dot {
