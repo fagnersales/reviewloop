@@ -27,12 +27,10 @@
 
 import { ConvexClient } from "convex/browser"
 import { api } from "../convex/_generated/api.js"
-import { spawn } from "node:child_process"
 import {
   readFileSync,
   mkdirSync,
   mkdtempSync,
-  appendFileSync,
   rmSync,
   readdirSync,
   statSync,
@@ -40,35 +38,22 @@ import {
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { hostname, tmpdir } from "node:os"
+import {
+  loadConfig,
+  resolveConvexUrl,
+  run,
+  errorReason,
+  log,
+  clean,
+  streamClaude,
+  ensureLabel,
+  setStateLabel,
+} from "./lib.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-function loadConfig() {
-  const base = JSON.parse(readFileSync(join(__dirname, "config.json"), "utf8"))
-  try {
-    const local = JSON.parse(
-      readFileSync(join(__dirname, "config.local.json"), "utf8"),
-    )
-    Object.assign(base, local)
-  } catch {
-    /* no local override */
-  }
-  return base
-}
-
-// Pull VITE_CONVEX_URL / CONVEX_URL out of ../.env.local (written by `convex dev`).
-function envLocalUrl() {
-  try {
-    const txt = readFileSync(join(__dirname, "..", ".env.local"), "utf8")
-    const get = (k) => txt.match(new RegExp(`^${k}=(.+)$`, "m"))?.[1]?.trim()
-    return get("VITE_CONVEX_URL") || get("CONVEX_URL")
-  } catch {
-    return undefined
-  }
-}
-
 const cfg = loadConfig()
-const CONVEX_URL = process.env.PRR_CONVEX_URL || cfg.convexUrl || envLocalUrl()
+const CONVEX_URL = resolveConvexUrl(cfg)
 const CLAUDE_BIN = process.env.CLAUDE_BIN || cfg.claudeBin || "claude"
 const WORKER = hostname()
 const LOG_DIR = join(__dirname, "logs")
@@ -80,9 +65,6 @@ if (!CONVEX_URL) {
   )
   process.exit(1)
 }
-
-const ts = () => new Date().toISOString().slice(11, 19)
-const log = (...a) => console.log(`[${ts()}]`, ...a)
 
 // Where the inline review instructions come from: this console's own pr-review
 // skill body (frontmatter stripped). One source of truth — the target repo no
@@ -139,19 +121,6 @@ log(`worker "${WORKER}" up; convex=${CONVEX_URL} concurrency=${cfg.concurrency}`
 // A crash can leave a clone behind; clear strays before we start making more.
 sweepStaleClones()
 
-// ── run a shell command, capture output ──────────────────────────────────────
-function run(cmd, args, opts = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { env: process.env, ...opts })
-    let out = "",
-      err = ""
-    child.stdout.on("data", (d) => (out += d))
-    child.stderr.on("data", (d) => (err += d))
-    child.on("error", (e) => resolve({ code: -1, out, err: String(e) }))
-    child.on("close", (code) => resolve({ code, out, err }))
-  })
-}
-
 // ── repo clone + review prompt ───────────────────────────────────────────────
 // Blobless partial clone into `dir`: fast, but keeps full commit history so the
 // skill's `git log`/`git blame`/`git show origin/<head>:path` all work (blobs are
@@ -168,8 +137,7 @@ async function cloneRepo(repo, dir) {
     "--no-tags",
   ])
   if (code === 0) return { ok: true }
-  const reason = (err || "").trim().split("\n").pop() || `gh repo clone exited ${code}`
-  return { ok: false, error: reason }
+  return { ok: false, error: errorReason(err, `gh repo clone exited ${code}`) }
 }
 
 // The inline review brief: the skill body, plus the specifics of this PR so the
@@ -303,86 +271,18 @@ async function reviewClone(row, short, cloneDir) {
     "stream-json",
     "--verbose",
   ]
-  const child = spawn(CLAUDE_BIN, args, { cwd: cloneDir, env: process.env })
-
-  let finalText = "" // the agent's closing summary (from the result event)
-  let lastFullText = "" // fallback report source if no result event
-  let resultIsError = false
-  let lastLine = "" // newest activity line
-  let pushedLine = ""
-
-  // throttle progress writes to ~1/s so a chatty stream doesn't spam mutations
-  const flushTimer = setInterval(() => {
-    if (lastLine && lastLine !== pushedLine) {
-      pushedLine = lastLine
-      const line = lastLine
-      client.mutation(api.reviews.updateProgress, { id: row._id, line }).catch(() => {})
-    }
-  }, 1000)
-
-  const onEvent = (evt) => {
-    if (evt.type === "assistant" && evt.message?.content) {
-      for (const block of evt.message.content) {
-        if (block.type === "text" && block.text?.trim()) {
-          lastFullText = block.text
-          lastLine = firstLine(block.text)
-        } else if (block.type === "tool_use") {
-          lastLine = describeTool(block.name, block.input)
-        }
-      }
-    } else if (evt.type === "result") {
-      if (typeof evt.result === "string") finalText = evt.result
-      resultIsError = evt.is_error === true || (evt.subtype && evt.subtype !== "success")
-    }
-  }
-
-  // stdout is newline-delimited JSON; buffer partial lines across chunks
-  let pending = ""
-  child.stdout.on("data", (d) => {
-    const s = d.toString()
-    try {
-      appendFileSync(logFile, s)
-    } catch {
-      /* best effort */
-    }
-    pending += s
-    let nl
-    while ((nl = pending.indexOf("\n")) >= 0) {
-      const line = pending.slice(0, nl)
-      pending = pending.slice(nl + 1)
-      if (!line.trim()) continue
-      try {
-        onEvent(JSON.parse(line))
-      } catch {
-        /* non-JSON noise */
-      }
-    }
+  const r = await streamClaude({
+    claudeBin: CLAUDE_BIN,
+    args,
+    cwd: cloneDir,
+    logFile,
+    timeoutMs: cfg.reviewTimeoutMin * 60 * 1000,
+    onTimeout: () => log(`⏱ timeout #${row.prNumber} after ${cfg.reviewTimeoutMin}m — killing`),
+    onProgress: (line) =>
+      client.mutation(api.reviews.updateProgress, { id: row._id, line }).catch(() => {}),
   })
-  child.stderr.on("data", (d) => {
-    try {
-      appendFileSync(logFile, d)
-    } catch {
-      /* best effort */
-    }
-  })
-
-  const timeout = setTimeout(
-    () => {
-      log(`⏱ timeout #${row.prNumber} after ${cfg.reviewTimeoutMin}m — killing`)
-      child.kill("SIGTERM")
-    },
-    cfg.reviewTimeoutMin * 60 * 1000,
-  )
-
-  const code = await new Promise((resolve) => {
-    child.on("error", (e) => {
-      finalText += `\n[spawn error] ${e}`
-      resolve(-1)
-    })
-    child.on("close", resolve)
-  })
-  clearTimeout(timeout)
-  clearInterval(flushTimer)
+  const { code, resultIsError, lastFullText } = r
+  const finalText = r.spawnError ? `${r.finalText}\n[spawn error] ${r.spawnError}` : r.finalText
 
   const reviewUrl = await latestReviewUrl(row.repo, row.prNumber, row.headSha)
   const reportText = finalText || lastFullText
@@ -421,58 +321,12 @@ async function reviewClone(row, short, cloneDir) {
   }
 }
 
-// path basename, for compact "Reading <file>" lines
-function base(p) {
-  return (p || "").split("/").pop() || p || ""
-}
-
-// first non-empty line of a block of text, trimmed + clamped
-function firstLine(t) {
-  const line = (t || "").split("\n").map((s) => s.trim()).find(Boolean) || ""
-  return line.slice(0, 240)
-}
-
-// a short human label for what a tool call is doing
-function describeTool(name, input = {}) {
-  switch (name) {
-    case "Bash":
-      return `$ ${(input.command || "").replace(/\s+/g, " ").slice(0, 180)}`
-    case "Read":
-      return `Reading ${base(input.file_path)}`
-    case "Edit":
-    case "MultiEdit":
-    case "Write":
-      return `Editing ${base(input.file_path)}`
-    case "Grep":
-      return `Searching "${(input.pattern || "").slice(0, 80)}"`
-    case "Glob":
-      return `Finding ${input.pattern || ""}`
-    case "WebFetch":
-      return `Fetching ${input.url || ""}`
-    case "WebSearch":
-      return `Web search: ${input.query || ""}`
-    case "Task":
-      return `Subagent: ${input.description || "task"}`
-    case "TodoWrite":
-      return "Updating its plan"
-    default:
-      return name?.startsWith("mcp__")
-        ? name.replace(/^mcp__/, "").replace(/__/g, " · ")
-        : name || "working…"
-  }
-}
-
 async function finish(row, ok, fields) {
   try {
     await client.mutation(api.reviews.finish, { id: row._id, ok, ...clean(fields) })
   } catch (e) {
     log(`finish error #${row.prNumber}:`, String(e))
   }
-}
-
-// drop undefined keys so optional validators are happy
-function clean(o) {
-  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined))
 }
 
 // Latest review GitHub holds for this PR at the reviewed SHA -> its html_url.
@@ -524,7 +378,7 @@ async function captureCommits(row) {
     `num=${row.prNumber}`,
   ])
   if (code !== 0) {
-    log(`captureCommits #${row.prNumber}: gh graphql failed:`, (err || "").trim().split("\n").pop())
+    log(`captureCommits #${row.prNumber}: gh graphql failed:`, errorReason(err, `exit ${code}`))
     return
   }
   let nodes
@@ -657,43 +511,9 @@ async function reconcile(reason) {
 // the GitHub side: file approved proposals as issues, and propagate the human's
 // triage-label choice to the real issue (which the solver loop reads).
 
-// The state-role labels (mutually exclusive — an issue carries exactly one). The
-// triage subset (needs-triage / ready-for-agent / ready-for-human / wontfix) is
-// human-set; agent-in-progress / agent-failed are set by the solver as it builds
-// (see worker/solver.mjs). Listed here too so this worker's gate-2 label-sync treats
-// them as part of the same mutually-exclusive set.
-const STATE_LABELS = [
-  "needs-triage",
-  "ready-for-agent",
-  "agent-in-progress",
-  "ready-for-human",
-  "agent-failed",
-  "wontfix",
-]
-const LABEL_COLORS = {
-  "needs-triage": "fbca04",
-  "ready-for-agent": "5319e7",
-  "agent-in-progress": "1d76db",
-  "ready-for-human": "0e8a16",
-  "agent-failed": "d73a4a",
-  wontfix: "ffffff",
-}
-
-// Best-effort: make sure the label exists on the repo before we add it. `--force`
-// creates it if missing and is a no-op-ish update if present, so this never errors
-// the caller on "already exists".
-async function ensureLabel(repo, name) {
-  await run("gh", [
-    "label",
-    "create",
-    name,
-    "--repo",
-    repo,
-    "--color",
-    LABEL_COLORS[name] ?? "ededed",
-    "--force",
-  ])
-}
+// The state-role label vocabulary and swap logic live in ./lib.mjs
+// (STATE_LABELS / setStateLabel) — shared with worker/solver.mjs so the two
+// workers can never disagree on the mutually-exclusive label set.
 
 // The GitHub issue body for an opened proposal: the brief a *fresh* agent reads
 // (no prior knowledge of the source PR), plus a machine-readable dedup marker so
@@ -758,28 +578,6 @@ async function findIssueByMarker(repo, dedupKey) {
   }
 }
 
-// The state-role labels currently on a GitHub issue (so label sync only removes
-// the ones actually present — `gh issue edit --remove-label` errors otherwise).
-async function currentStateLabels(repo, issueNumber) {
-  const { code, out } = await run("gh", [
-    "issue",
-    "view",
-    String(issueNumber),
-    "--repo",
-    repo,
-    "--json",
-    "labels",
-  ])
-  if (code !== 0) return []
-  try {
-    return (JSON.parse(out).labels ?? [])
-      .map((l) => l.name)
-      .filter((n) => STATE_LABELS.includes(n))
-  } catch {
-    return []
-  }
-}
-
 async function recordSuggestionError(row, error) {
   await client
     .mutation(api.suggestedIssues.recordWorkerError, { id: row._id, error })
@@ -813,7 +611,7 @@ async function openSuggestedIssue(row) {
       "needs-triage",
     ])
     if (code !== 0) {
-      const reason = (err || "").trim().split("\n").pop() || `gh issue create exited ${code}`
+      const reason = errorReason(err, `gh issue create exited ${code}`)
       log(`✗ open issue failed ${row.repo} «${row.title}»: ${reason}`)
       await recordSuggestionError(row, `gh issue create: ${reason}`)
       return
@@ -842,24 +640,10 @@ async function syncSuggestedLabel(row) {
   processingSuggestions.add(id)
   try {
     const desired = row.label
-    await ensureLabel(row.repo, desired)
-    const present = await currentStateLabels(row.repo, row.issueNumber)
-    const remove = present.filter((l) => l !== desired)
-    const args = [
-      "issue",
-      "edit",
-      String(row.issueNumber),
-      "--repo",
-      row.repo,
-      "--add-label",
-      desired,
-    ]
-    for (const l of remove) args.push("--remove-label", l)
-    const { code, err } = await run("gh", args)
-    if (code !== 0) {
-      const reason = (err || "").trim().split("\n").pop() || `gh issue edit exited ${code}`
-      log(`✗ label sync failed ${row.repo}#${row.issueNumber}: ${reason}`)
-      await recordSuggestionError(row, `gh issue edit: ${reason}`)
+    const r = await setStateLabel(row.repo, row.issueNumber, desired)
+    if (!r.ok) {
+      log(`✗ label sync failed ${row.repo}#${row.issueNumber}: ${r.reason}`)
+      await recordSuggestionError(row, `gh issue edit: ${r.reason}`)
       return
     }
     log(`✓ ${row.repo}#${row.issueNumber} label → ${desired}`)
@@ -892,7 +676,7 @@ async function doMerge(row) {
       "--delete-branch",
     ])
     if (code !== 0) {
-      const reason = (err || "").trim().split("\n").pop() || `gh pr merge exited ${code}`
+      const reason = errorReason(err, `gh pr merge exited ${code}`)
       log(`✗ merge failed ${row.repo}#${row.prNumber}: ${reason}`)
       await client
         .mutation(api.reviews.recordMergeError, { id, error: reason })

@@ -20,38 +20,10 @@
 import { ConvexClient } from "convex/browser"
 import { api } from "../convex/_generated/api.js"
 import { spawnSync } from "node:child_process"
-import { readFileSync } from "node:fs"
-import { fileURLToPath } from "node:url"
-import { dirname, join } from "node:path"
-
-const __dirname = dirname(fileURLToPath(import.meta.url))
-
-function loadConfig() {
-  const base = JSON.parse(readFileSync(join(__dirname, "config.json"), "utf8"))
-  try {
-    const local = JSON.parse(
-      readFileSync(join(__dirname, "config.local.json"), "utf8"),
-    )
-    Object.assign(base, local)
-  } catch {
-    /* no local override */
-  }
-  return base
-}
-
-// Pull VITE_CONVEX_URL / CONVEX_URL out of ../.env.local (written by `convex dev`).
-function envLocalUrl() {
-  try {
-    const txt = readFileSync(join(__dirname, "..", ".env.local"), "utf8")
-    const get = (k) => txt.match(new RegExp(`^${k}=(.+)$`, "m"))?.[1]?.trim()
-    return get("VITE_CONVEX_URL") || get("CONVEX_URL")
-  } catch {
-    return undefined
-  }
-}
+import { loadConfig, resolveConvexUrl, ghText, ghJson } from "./lib.mjs"
 
 const cfg = loadConfig()
-const CONVEX_URL = process.env.PRR_CONVEX_URL || cfg.convexUrl || envLocalUrl()
+const CONVEX_URL = resolveConvexUrl(cfg)
 
 // Optional ambient "review in progress" indicator. If PRR_AWAIT_HOOK (or
 // cfg.awaitHook) names an executable, we invoke it on the two lifecycle edges:
@@ -119,23 +91,6 @@ function die(msg) {
   process.exit(1)
 }
 
-function gh(args) {
-  const r = spawnSync("gh", args, { encoding: "utf8" })
-  if (r.status !== 0) return undefined
-  return (r.stdout || "").trim() || undefined
-}
-
-// `gh ... --json <fields>` parsed to an object (undefined on any failure).
-function ghJson(args) {
-  const r = spawnSync("gh", args, { encoding: "utf8" })
-  if (r.status !== 0) return undefined
-  try {
-    return JSON.parse(r.stdout || "")
-  } catch {
-    return undefined
-  }
-}
-
 function parseArgs(argv) {
   const opts = {
     pr: undefined,
@@ -183,7 +138,8 @@ if (!Number.isFinite(opts.timeout) || opts.timeout <= 0) {
 
 // repo: explicit, else infer from the current repo
 const repo =
-  opts.repo || gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+  opts.repo ||
+  (await ghText(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]))
 if (!repo) {
   die("could not determine repo — pass --repo <owner/name> (gh repo view failed)")
 }
@@ -191,7 +147,7 @@ if (!repo) {
 // head SHA: explicit, else resolve the PR's head ref
 const headSha =
   opts.head ||
-  gh(["pr", "view", String(prNumber), "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"])
+  (await ghText(["pr", "view", String(prNumber), "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"]))
 if (!headSha) {
   die(
     `could not resolve head SHA for ${repo}#${prNumber} — pass --head <sha> (gh pr view failed)`,
@@ -320,7 +276,7 @@ async function selfHeal() {
   if (settled || lastRow || selfHealAttempted) return
   selfHealAttempted = true
 
-  const meta = ghJson([
+  const meta = await ghJson([
     "pr", "view", String(prNumber), "--repo", repo,
     "--json", "title,author,url,createdAt,state,isDraft",
   ])

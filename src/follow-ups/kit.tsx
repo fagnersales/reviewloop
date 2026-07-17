@@ -47,6 +47,8 @@ export const SOURCE_META: Record<SugSource, { label: string; icon: LucideIcon }>
 
 // The triage state-role labels (gate 2). `needs-triage` is where an opened
 // follow-up starts; promoting to `ready-for-agent` is what hands it to the solver.
+// Deliberately the human-settable subset of the full 6-label vocabulary in
+// worker/lib.mjs (STATE_LABELS); the solver-set labels aren't pickable here.
 export const LABELS: { id: TriageLabel; label: string; tone: string }[] = [
   { id: "needs-triage", label: "needs-triage", tone: "border-amber-400/25 bg-amber-400/10 text-amber-200" },
   { id: "ready-for-agent", label: "ready-for-agent", tone: "border-indigo-400/25 bg-indigo-400/10 text-indigo-200" },

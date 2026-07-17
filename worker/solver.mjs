@@ -33,17 +33,19 @@
 
 import { ConvexClient } from "convex/browser"
 import { api } from "../convex/_generated/api.js"
-import { spawn } from "node:child_process"
-import {
-  readFileSync,
-  existsSync,
-  statSync,
-  mkdirSync,
-  appendFileSync,
-} from "node:fs"
+import { readFileSync, existsSync, statSync, mkdirSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { hostname, homedir } from "node:os"
+import {
+  resolveConvexUrl,
+  run,
+  errorReason,
+  log,
+  clean,
+  streamClaude,
+  setStateLabel,
+} from "./lib.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -82,17 +84,6 @@ function loadConfig() {
   return cfg
 }
 
-// Pull VITE_CONVEX_URL / CONVEX_URL out of ../.env.local (written by `convex dev`).
-function envLocalUrl() {
-  try {
-    const txt = readFileSync(join(__dirname, "..", ".env.local"), "utf8")
-    const get = (k) => txt.match(new RegExp(`^${k}=(.+)$`, "m"))?.[1]?.trim()
-    return get("VITE_CONVEX_URL") || get("CONVEX_URL")
-  } catch {
-    return undefined
-  }
-}
-
 // Expand a leading ~ to the home dir; leave the rest of the path untouched.
 function expandHome(p) {
   if (typeof p !== "string") return p
@@ -102,7 +93,7 @@ function expandHome(p) {
 }
 
 const cfg = loadConfig()
-const CONVEX_URL = process.env.PRR_CONVEX_URL || cfg.convexUrl || envLocalUrl()
+const CONVEX_URL = resolveConvexUrl(cfg)
 const CLAUDE_BIN = process.env.CLAUDE_BIN || cfg.claudeBin || "claude"
 const WORKER = `solver@${hostname()}`
 const LOG_DIR = join(__dirname, "logs")
@@ -114,9 +105,6 @@ if (!CONVEX_URL) {
   )
   process.exit(1)
 }
-
-const ts = () => new Date().toISOString().slice(11, 19)
-const log = (...a) => console.log(`[${ts()}]`, ...a)
 
 // Build a case-insensitive registry: lowercased slug -> { slug (canonical), path }.
 // GitHub slugs are case-insensitive (matched the same way as convex/repos.ts).
@@ -143,19 +131,6 @@ log(
     `checkouts=${CHECKOUTS.size}`,
 )
 
-// ── run a shell command, capture output ──────────────────────────────────────
-function run(cmd, args, opts = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { env: process.env, ...opts })
-    let out = "",
-      err = ""
-    child.stdout.on("data", (d) => (out += d))
-    child.stderr.on("data", (d) => (err += d))
-    child.on("error", (e) => resolve({ code: -1, out, err: String(e) }))
-    child.on("close", (code) => resolve({ code, out, err }))
-  })
-}
-
 // ── GitHub issue label lifecycle ─────────────────────────────────────────────
 // The solver moves a solved issue through mutually-exclusive state-role labels so
 // `ready-for-agent` means ONLY "waiting, claimable" — never an in-flight or finished
@@ -168,60 +143,16 @@ function run(cmd, args, opts = {}) {
 //                                                     to ready-for-agent retries)
 // Since the reconcile keys on `ready-for-agent`, in-progress and failed issues fall
 // out of the claimable pool automatically — no auto-retry of an expensive failed solve.
-const STATE_LABELS = [
-  "needs-triage",
-  "ready-for-agent",
-  "agent-in-progress",
-  "ready-for-human",
-  "agent-failed",
-  "wontfix",
-]
-const LABEL_COLORS = {
-  "needs-triage": "fbca04",
-  "ready-for-agent": "5319e7",
-  "agent-in-progress": "1d76db",
-  "ready-for-human": "0e8a16",
-  "agent-failed": "d73a4a",
-  wontfix: "ffffff",
-}
-
-// Make sure the label exists before adding it (--force creates-or-updates).
-async function ensureLabel(repo, name) {
-  await run("gh", [
-    "label", "create", name, "--repo", repo,
-    "--color", LABEL_COLORS[name] ?? "ededed", "--force",
-  ])
-}
-
-// The state-role labels currently on an issue (so a swap only removes present ones —
-// `gh issue edit --remove-label` errors on an absent label).
-async function currentStateLabels(repo, issueNumber) {
-  const { code, out } = await run("gh", [
-    "issue", "view", String(issueNumber), "--repo", repo, "--json", "labels",
-  ])
-  if (code !== 0) return []
-  try {
-    return (JSON.parse(out).labels ?? [])
-      .map((l) => l.name)
-      .filter((n) => STATE_LABELS.includes(n))
-  } catch {
-    return []
-  }
-}
-
-// Move the issue to exactly one state-role label: add `desired`, remove any other
-// state labels present. Best-effort — a label hiccup is logged but never fails the
-// solve (the Convex claim, not the label, is what prevents a double-solve).
+// The vocabulary (STATE_LABELS / LABEL_COLORS) and the swap implementation live
+// in ./lib.mjs — shared with worker/index.mjs's gate-2 label sync so the two
+// workers can never disagree on the mutually-exclusive label set.
+//
+// Best-effort — a label hiccup is logged but never fails the solve (the Convex
+// claim, not the label, is what prevents a double-solve).
 async function swapStateLabel(repo, issueNumber, desired) {
   try {
-    await ensureLabel(repo, desired)
-    const present = await currentStateLabels(repo, issueNumber)
-    const remove = present.filter((l) => l !== desired)
-    const args = ["issue", "edit", String(issueNumber), "--repo", repo, "--add-label", desired]
-    for (const l of remove) args.push("--remove-label", l)
-    const { code, err } = await run("gh", args)
-    if (code !== 0)
-      log(`⚠ label swap ${repo}#${issueNumber} → ${desired} failed: ${(err || "").trim().split("\n").pop()}`)
+    const r = await setStateLabel(repo, issueNumber, desired)
+    if (!r.ok) log(`⚠ label swap ${repo}#${issueNumber} → ${desired} failed: ${r.reason}`)
     else log(`🏷  ${repo}#${issueNumber} → ${desired}`)
   } catch (e) {
     log(`⚠ label swap ${repo}#${issueNumber} error:`, String(e))
@@ -389,11 +320,6 @@ async function finish(row, outcome, fields = {}) {
   }
 }
 
-// drop undefined keys so optional validators are happy
-function clean(o) {
-  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined))
-}
-
 // Best-effort note on the issue when a solve attempt ran but stalled (timeout / no
 // PR / claude error) — so a human sees *where* it stopped without digging through
 // worker logs. Not for config failures (no checkout) — those are an operator
@@ -440,7 +366,7 @@ async function runSolve(row) {
     await progress(row, "Fetching latest from origin")
     const fetched = await run("git", ["-C", co.path, "fetch", "origin", "--prune"])
     if (fetched.code !== 0) {
-      log(`⚠ git fetch failed in ${co.path}: ${(fetched.err || "").trim().split("\n").pop()}`)
+      log(`⚠ git fetch failed in ${co.path}: ${errorReason(fetched.err, `exit ${fetched.code}`)}`)
     }
 
     // Snapshot worktrees BEFORE the run. EnterWorktree transforms the name we ask
@@ -503,7 +429,7 @@ async function runSolve(row) {
 
 // Spawn `claude -p "/pr-feature …"` in the checkout, stream a live "what it's doing"
 // line to the dashboard, enforce the solve timeout. Returns true on a clean exit.
-function spawnPrFeature(row, cwd, prompt, logFile) {
+async function spawnPrFeature(row, cwd, prompt, logFile) {
   const args = [
     "-p",
     prompt,
@@ -524,125 +450,18 @@ function spawnPrFeature(row, cwd, prompt, logFile) {
     PRR_UNATTENDED: "1",
     PRR_MAX_FIX_ROUNDS: String(cfg.maxFixRounds),
   }
-  const child = spawn(CLAUDE_BIN, args, { cwd, env })
-
-  let resultIsError = false
-  let lastLine = ""
-  let pushedLine = ""
-
-  // throttle progress writes to ~1/s
-  const flushTimer = setInterval(() => {
-    if (lastLine && lastLine !== pushedLine) {
-      pushedLine = lastLine
-      progress(row, lastLine)
-    }
-  }, 1000)
-
-  const onEvent = (evt) => {
-    if (evt.type === "assistant" && evt.message?.content) {
-      for (const block of evt.message.content) {
-        if (block.type === "text" && block.text?.trim()) {
-          lastLine = firstLine(block.text)
-        } else if (block.type === "tool_use") {
-          lastLine = describeTool(block.name, block.input)
-        }
-      }
-    } else if (evt.type === "result") {
-      resultIsError = evt.is_error === true || (evt.subtype && evt.subtype !== "success")
-    }
-  }
-
-  let pending = ""
-  child.stdout.on("data", (d) => {
-    const s = d.toString()
-    try {
-      appendFileSync(logFile, s)
-    } catch {
-      /* best effort */
-    }
-    pending += s
-    let nl
-    while ((nl = pending.indexOf("\n")) >= 0) {
-      const line = pending.slice(0, nl)
-      pending = pending.slice(nl + 1)
-      if (!line.trim()) continue
-      try {
-        onEvent(JSON.parse(line))
-      } catch {
-        /* non-JSON noise */
-      }
-    }
+  const r = await streamClaude({
+    claudeBin: CLAUDE_BIN,
+    args,
+    cwd,
+    env,
+    logFile,
+    timeoutMs: cfg.solveTimeoutMin * 60 * 1000,
+    onTimeout: () => log(`⏱ timeout #${row.issueNumber} after ${cfg.solveTimeoutMin}m — killing`),
+    onProgress: (line) => progress(row, line),
   })
-  child.stderr.on("data", (d) => {
-    try {
-      appendFileSync(logFile, d)
-    } catch {
-      /* best effort */
-    }
-  })
-
-  const timeout = setTimeout(
-    () => {
-      log(`⏱ timeout #${row.issueNumber} after ${cfg.solveTimeoutMin}m — killing`)
-      child.kill("SIGTERM")
-    },
-    cfg.solveTimeoutMin * 60 * 1000,
-  )
-
-  return new Promise((resolve) => {
-    child.on("error", (e) => {
-      log(`spawn error #${row.issueNumber}: ${e}`)
-      clearTimeout(timeout)
-      clearInterval(flushTimer)
-      resolve(false)
-    })
-    child.on("close", (code) => {
-      clearTimeout(timeout)
-      clearInterval(flushTimer)
-      resolve(code === 0 && !resultIsError)
-    })
-  })
-}
-
-// path basename, for compact "Reading <file>" lines
-function base(p) {
-  return (p || "").split("/").pop() || p || ""
-}
-
-// first non-empty line of a block of text, trimmed + clamped
-function firstLine(t) {
-  const line = (t || "").split("\n").map((s) => s.trim()).find(Boolean) || ""
-  return line.slice(0, 240)
-}
-
-// a short human label for what a tool call is doing — drives the live progress line
-function describeTool(name, input = {}) {
-  switch (name) {
-    case "Bash":
-      return `$ ${(input.command || "").replace(/\s+/g, " ").slice(0, 180)}`
-    case "Read":
-      return `Reading ${base(input.file_path)}`
-    case "Edit":
-    case "MultiEdit":
-    case "Write":
-      return `Editing ${base(input.file_path)}`
-    case "Grep":
-      return `Searching "${(input.pattern || "").slice(0, 80)}"`
-    case "Glob":
-      return `Finding ${input.pattern || ""}`
-    case "WebFetch":
-      return `Fetching ${input.url || ""}`
-    case "WebSearch":
-      return `Web search: ${input.query || ""}`
-    case "Task":
-      return `Subagent: ${input.description || "task"}`
-    case "TodoWrite":
-      return "Updating its plan"
-    default:
-      return name?.startsWith("mcp__")
-        ? name.replace(/^mcp__/, "").replace(/__/g, " · ")
-        : name || "working…"
-  }
+  if (r.spawnError) log(`spawn error #${row.issueNumber}: ${r.spawnError}`)
+  return r.code === 0 && !r.resultIsError
 }
 
 // ── PR capture (issue -> PR lineage) ─────────────────────────────────────────
@@ -782,7 +601,7 @@ async function reconcile(reason) {
       "--label", "ready-for-agent", "--json", "number,title,url", "--limit", "50",
     ])
     if (r.code !== 0) {
-      log(`reconcile ${repo} failed:`, (r.err || "").trim().split("\n").pop())
+      log(`reconcile ${repo} failed:`, errorReason(r.err, `exit ${r.code}`))
       continue
     }
     let issues = []

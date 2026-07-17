@@ -62,6 +62,10 @@ export const suggestionSource = v.union(
 // are per-repo tracker config). An opened follow-up always starts needs-triage;
 // the human promotes it. `ready-for-agent` is what the autonomous solver loop
 // gates on — promotion is the deliberate second gate.
+//
+// Deliberately the HUMAN-SETTABLE subset of the full 6-label vocabulary in
+// worker/lib.mjs (STATE_LABELS) — the solver-set labels (agent-in-progress /
+// agent-failed) are never chosen from the console, so they aren't valid here.
 export const triageLabel = v.union(
   v.literal("needs-triage"),
   v.literal("ready-for-agent"),
