@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# prr-await → cmux review-ring adapter.
+# reviewloop-await → cmux review-ring adapter.
 #
-# One consumer of the generic PRR_AWAIT_HOOK lifecycle contract that await.mjs
+# One consumer of the generic REVIEWLOOP_AWAIT_HOOK lifecycle contract that await.mjs
 # emits (`start <waiterPid> <repo> <pr> <sha>` / `end <exitCode> …`). It lights
 # the cmux pane ring while a review is in flight and colours it by outcome.
 #
-# Enable it (cmux users only — everyone else just leaves PRR_AWAIT_HOOK unset):
-#   export PRR_AWAIT_HOOK="$PWD/integrations/cmux-ring.sh"
+# Enable it (cmux users only — everyone else just leaves REVIEWLOOP_AWAIT_HOOK unset):
+#   export REVIEWLOOP_AWAIT_HOOK="$PWD/integrations/cmux-ring.sh"
 # Put that in your shell profile, or have your cmux fork inject it into the pane
 # environment alongside the CMUX_* vars below.
 #

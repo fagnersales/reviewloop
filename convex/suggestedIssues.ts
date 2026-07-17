@@ -52,7 +52,7 @@ async function isWatched(ctx: MutationCtx, repo: string): Promise<boolean> {
   return watched.some((r) => r.repo.toLowerCase() === target)
 }
 
-// ── producer: the prr-suggest CLI ─────────────────────────────────────────────
+// ── producer: the reviewloop-suggest CLI ─────────────────────────────────────────────
 
 // One proposed follow-up, as the pr-feature agent emits it (files optional).
 const suggestItem = v.object({
@@ -63,7 +63,7 @@ const suggestItem = v.object({
   files: v.optional(v.array(v.string())),
 })
 
-// Called by `prr-suggest` (worker/suggest.mjs) at the unattended wrap-up of a PR.
+// Called by `reviewloop-suggest` (worker/suggest.mjs) at the unattended wrap-up of a PR.
 // Idempotent on dedupKey and gated on watchedRepos like reviews.doEnqueue: a
 // re-run collapses onto existing rows (counted as duplicates), and an unwatched
 // repo files nothing. A pre-existing row in ANY status (including dismissed) is a

@@ -78,7 +78,7 @@ export function useNow(periodMs = 1000) {
 // The "open only" PR-list filter is a view preference, not server state, so it
 // lives in localStorage and survives reloads. Shared by both the desktop list and
 // the mobile view so the preference carries across layouts.
-const OPEN_ONLY_KEY = "prr.pr-list.open-only"
+const OPEN_ONLY_KEY = "reviewloop.pr-list.open-only"
 
 export function useOpenOnly() {
   const [openOnly, setOpenOnly] = useState(() =>
@@ -209,7 +209,7 @@ export function buildEvents(pr: Pr): TimelineEvent[] {
         passId: pass._id,
         headSha: pass.headSha,
       })
-      // An agent acked this review (via prr-ack) and is on the findings — the
+      // An agent acked this review (via reviewloop-ack) and is on the findings — the
       // trustworthy "someone picked it up" the console can't otherwise know.
       if (pass.ackedAt != null) {
         events.push({
@@ -289,7 +289,7 @@ export function PrStatusText({ pr }: { pr: Pr }) {
   const m = STATUS_META[pr.statusKey]
   return (
     <span className={cn("inline-flex shrink-0 items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.06em]", m.text)}>
-      <span className={cn("size-[5px] shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
+      <span className={cn("size-[5px] shrink-0 rounded-full", m.dot, m.pulse && "rl-pulse")} />
       {m.label}
     </span>
   )
@@ -299,7 +299,7 @@ export function PrStatusPill({ pr }: { pr: Pr }) {
   const m = STATUS_META[pr.statusKey]
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded border px-2.5 py-[3px] font-mono text-[10px] font-medium", m.text, m.bg, m.border)}>
-      <span className={cn("size-1.5 shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
+      <span className={cn("size-1.5 shrink-0 rounded-full", m.dot, m.pulse && "rl-pulse")} />
       {m.label}
     </span>
   )

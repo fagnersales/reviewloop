@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Event-driven PR-review worker.
 //
-// Subscribes to the prr-console Convex deployment over its sync websocket and
+// Subscribes to the reviewloop Convex deployment over its sync websocket and
 // reacts to changes instead of polling GitHub:
 //   - reviews.claimable  -> claim a queued review, then run `claude -p "<review
 //                           instructions>"` against a fresh clone of the target
@@ -61,7 +61,7 @@ mkdirSync(LOG_DIR, { recursive: true })
 
 if (!CONVEX_URL) {
   console.error(
-    "[prr-worker] no Convex URL. Set PRR_CONVEX_URL, config.convexUrl, or run `npx convex dev` first.",
+    "[reviewloop-worker] no Convex URL. Set REVIEWLOOP_CONVEX_URL, config.convexUrl, or run `npx convex dev` first.",
   )
   process.exit(1)
 }
@@ -71,9 +71,9 @@ if (!CONVEX_URL) {
 // longer needs the skill installed for the worker to review it.
 const SKILL_FILE = join(__dirname, "..", ".claude", "skills", "pr-review", "SKILL.md")
 
-// Throwaway clones live here, one per review, each dir named `prr-review-*`.
-const CLONE_PREFIX = "prr-review-"
-const CLONE_BASE = process.env.PRR_CLONE_DIR || cfg.cloneDir || tmpdir()
+// Throwaway clones live here, one per review, each dir named `reviewloop-review-*`.
+const CLONE_PREFIX = "reviewloop-review-"
+const CLONE_BASE = process.env.REVIEWLOOP_CLONE_DIR || process.env.PRR_CLONE_DIR || cfg.cloneDir || tmpdir()
 mkdirSync(CLONE_BASE, { recursive: true })
 
 // The review instructions, loaded once: the pr-review skill body, minus two
@@ -92,7 +92,7 @@ try {
     .trim()
   if (!REVIEW_SKILL) throw new Error("empty after stripping frontmatter")
 } catch (e) {
-  console.error(`[prr-worker] cannot read review instructions at ${SKILL_FILE}: ${e}`)
+  console.error(`[reviewloop-worker] cannot read review instructions at ${SKILL_FILE}: ${e}`)
   process.exit(1)
 }
 
@@ -166,7 +166,7 @@ exactly one \`COMMENT\` review to GitHub, then close your message with the revie
 URL, the confidence score, the review-effort score, and the P0/P1/P2 counts.`
 }
 
-// Remove `prr-review-*` clone dirs left in CLONE_BASE by a prior crash. Bounded
+// Remove `reviewloop-review-*` clone dirs left in CLONE_BASE by a prior crash. Bounded
 // by age so a concurrent worker's *live* clone (always younger than the review
 // timeout) is never swept — multiple workers may share CLONE_BASE.
 function sweepStaleClones() {
@@ -539,7 +539,7 @@ This issue was proposed by an automated agent **while it built the PR below**. Y
 - Head commit when proposed: \`${row.sourceHeadSha.slice(0, 7)}\`
 - Proposed category: ${row.category} · Flagged as: ${row.source}
 
-<!-- prr-suggest:${row.dedupKey} -->
+<!-- reviewloop-suggest:${row.dedupKey} -->
 `
 }
 
@@ -571,8 +571,11 @@ async function findIssueByMarker(repo, dedupKey) {
   if (code !== 0) return undefined
   try {
     const arr = JSON.parse(out)
-    const marker = `prr-suggest:${dedupKey}`
-    return arr.find((i) => typeof i.body === "string" && i.body.includes(marker))?.number
+    // Also match the pre-rename marker so issues filed before the reviewloop
+    // rename still dedup instead of being re-filed.
+    const markers = [`reviewloop-suggest:${dedupKey}`, `prr-suggest:${dedupKey}`]
+    return arr.find((i) => typeof i.body === "string" && markers.some((m) => i.body.includes(m)))
+      ?.number
   } catch {
     return undefined
   }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Event-driven autonomous "solver" worker — the third half of the prr-console loop.
+// Event-driven autonomous "solver" worker — the third half of the reviewloop loop.
 //
 // The review half reviews PRs; the follow-ups half turns agent proposals into
 // `ready-for-agent` issues. This worker closes the loop: when a GitHub issue carries
@@ -7,7 +7,7 @@
 // run that builds the feature and opens a PR (`Closes #N`). That PR is then reviewed
 // by the review half **for free**. The solver NEVER merges — a human does.
 //
-// It subscribes to the prr-console Convex deployment over its sync websocket and
+// It subscribes to the reviewloop Convex deployment over its sync websocket and
 // reacts to changes instead of polling:
 //   - solveTasks.claimable -> claim a queued solve, spawn `/pr-feature` against a
 //                             configured checkout, capture the PR it opened, report.
@@ -28,7 +28,7 @@
 //
 // The elegance: the solver does NOT reimplement build/review/fix. The global
 // `pr-feature` skill already does all of it (worktree -> build -> open PR ->
-// prr-await loop -> auto-fix -> stop clean). The solver just: find a ready-for-agent
+// reviewloop-await loop -> auto-fix -> stop clean). The solver just: find a ready-for-agent
 // issue -> claim -> spawn pr-feature in the right folder -> track status -> clean up.
 
 import { ConvexClient } from "convex/browser"
@@ -69,16 +69,17 @@ function loadConfig() {
     Object.assign(cfg, JSON.parse(readFileSync(join(__dirname, "solver.config.json"), "utf8")))
   } catch {
     console.warn(
-      "[prr-solver] no worker/solver.config.json found — starting with no checkouts.\n" +
-        "[prr-solver] copy worker/solver.config.example.json to worker/solver.config.json and add your repo→path map.",
+      "[reviewloop-solver] no worker/solver.config.json found — starting with no checkouts.\n" +
+        "[reviewloop-solver] copy worker/solver.config.example.json to worker/solver.config.json and add your repo→path map.",
     )
   }
   // Env override for the checkout registry (JSON map), e.g. for CI/host injection.
-  if (process.env.PRR_SOLVER_CHECKOUTS) {
+  const checkoutsEnv = process.env.REVIEWLOOP_SOLVER_CHECKOUTS || process.env.PRR_SOLVER_CHECKOUTS
+  if (checkoutsEnv) {
     try {
-      cfg.checkouts = { ...cfg.checkouts, ...JSON.parse(process.env.PRR_SOLVER_CHECKOUTS) }
+      cfg.checkouts = { ...cfg.checkouts, ...JSON.parse(checkoutsEnv) }
     } catch (e) {
-      console.warn(`[prr-solver] ignoring invalid PRR_SOLVER_CHECKOUTS JSON: ${e}`)
+      console.warn(`[reviewloop-solver] ignoring invalid REVIEWLOOP_SOLVER_CHECKOUTS JSON: ${e}`)
     }
   }
   return cfg
@@ -101,7 +102,7 @@ mkdirSync(LOG_DIR, { recursive: true })
 
 if (!CONVEX_URL) {
   console.error(
-    "[prr-solver] no Convex URL. Set PRR_CONVEX_URL, solver.config.convexUrl, or run `npx convex dev` first.",
+    "[reviewloop-solver] no Convex URL. Set REVIEWLOOP_CONVEX_URL, solver.config.convexUrl, or run `npx convex dev` first.",
   )
   process.exit(1)
 }
@@ -246,7 +247,7 @@ function branchFor(issueNumber, title) {
 function solvePrompt(row, branch, issueBody, maxFixRounds) {
   return `/pr-feature Solve issue #${row.issueNumber} in ${row.repo} and open a PR for it.
 
-You are running UNATTENDED (no human is watching this turn) as the prr-console
+You are running UNATTENDED (no human is watching this turn) as the reviewloop
 autonomous solver. Build the change the issue asks for, open a PR that closes the
 issue, and let the existing review loop review it. Do NOT merge — a human merges.
 
@@ -269,7 +270,7 @@ ${issueBody && issueBody.trim() ? issueBody.trim() : "(no body)"}
   leave the PR for a human even if it isn't fully clean — do not loop indefinitely.
 - **NEVER merge**, and never push to the default branch. Stop once the PR is open and
   the review has settled (clean, or the fix-round cap is reached).
-- At wrap-up, flush any out-of-scope follow-ups via \`prr-suggest\` as usual.`
+- At wrap-up, flush any out-of-scope follow-ups via \`reviewloop-suggest\` as usual.`
 }
 
 // ── claim + run loop ─────────────────────────────────────────────────────────
@@ -410,7 +411,7 @@ async function runSolve(row) {
       await commentStall(
         row.repo,
         row.issueNumber,
-        `🤖 prr-console solver could not finish this autonomously: ${why}. ` +
+        `🤖 reviewloop solver could not finish this autonomously: ${why}. ` +
           `A human can take it from here — re-label \`ready-for-agent\` to retry.`,
       ).catch(() => {})
       // Hand it back to a human (a distinct state from "never triaged"); the
@@ -441,12 +442,16 @@ async function spawnPrFeature(row, cwd, prompt, logFile) {
     "stream-json",
     "--verbose",
   ]
-  // PRR_UNATTENDED=1 is the spawn contract: it tells pr-feature it's headless, so it
-  // flushes follow-ups via prr-suggest without waiting for a human and skips
-  // human-facing chatter. PRR_MAX_FIX_ROUNDS forwards the cap (the prompt also states
+  // REVIEWLOOP_UNATTENDED=1 is the spawn contract: it tells pr-feature it's headless, so it
+  // flushes follow-ups via reviewloop-suggest without waiting for a human and skips
+  // human-facing chatter. REVIEWLOOP_MAX_FIX_ROUNDS forwards the cap (the prompt also states
   // it, which is authoritative).
+  // The PRR_* pair is the pre-rename spelling of the same contract — kept until
+  // the external pr-feature skill reads the REVIEWLOOP_* names.
   const env = {
     ...process.env,
+    REVIEWLOOP_UNATTENDED: "1",
+    REVIEWLOOP_MAX_FIX_ROUNDS: String(cfg.maxFixRounds),
     PRR_UNATTENDED: "1",
     PRR_MAX_FIX_ROUNDS: String(cfg.maxFixRounds),
   }

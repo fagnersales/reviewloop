@@ -1,7 +1,7 @@
 // The mobile solve detail: status pill, issue heading, the live "Solver session"
 // card while building (the worker's streamed one-line progress + elapsed clock),
 // the failure banner, and the provenance rows (branch / worker / timing) —
-// read-only, per the "PRR Console Mobile" design. Solvers never merge; the only
+// read-only, per the "reviewloop mobile" design. Solvers never merge; the only
 // human action (merging the opened PR) happens on GitHub.
 import { useEffect, useState } from "react"
 import { AlertTriangle, ArrowUpRight } from "lucide-react"
@@ -73,7 +73,7 @@ export function MobileSolveDetail({ task: t }: { task: SolveTask }) {
           </div>
           <div className="px-[13px] py-2.5 font-mono text-[11px] leading-[1.95]">
             <div className="flex gap-[9px]">
-              <span className="prr-pulse mt-[7px] size-[5px] shrink-0 rounded-full bg-[#38bdf8]" />
+              <span className="rl-pulse mt-[7px] size-[5px] shrink-0 rounded-full bg-[#38bdf8]" />
               <span className="cl-shimmer min-w-0">{t.progress || "Starting…"}</span>
             </div>
           </div>

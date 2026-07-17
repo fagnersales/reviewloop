@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // "Acknowledge a PR review" CLI: `node worker/ack.mjs <pr>`
-// (installed bin: `prr-ack <pr>`).
+// (installed bin: `reviewloop-ack <pr>`).
 //
 // A fix agent calls this once it has picked up a posted review and is starting on
-// the findings. It stamps the prr-console Convex `reviews` row so the console can
+// the findings. It stamps the reviewloop Convex `reviews` row so the console can
 // show a real "In progress" instead of "Awaiting agent" — the one thing the
 // console can't observe on its own (an agent has started but hasn't pushed a
-// commit yet). The natural companion to `prr-await`: await the review, then ack it.
+// commit yet). The natural companion to `reviewloop-await`: await the review, then ack it.
 //
 // One-shot: it calls the `reviews.ack` mutation and exits. With `--head` it acks
 // the review of that exact commit; without, the PR's most recent reviewed pass.
@@ -25,14 +25,14 @@ const CONVEX_URL = resolveConvexUrl(cfg)
 // runtime and surfaced by the mutation call.
 const ACK = api.reviews.ack
 
-const HELP = `prr-ack — acknowledge a PR review (mark it "in progress")
+const HELP = `reviewloop-ack — acknowledge a PR review (mark it "in progress")
 
 Usage:
   node worker/ack.mjs <pr> [options]
 
-Stamps the prr-console review row so the console shows "In progress" instead of
+Stamps the reviewloop review row so the console shows "In progress" instead of
 "Awaiting agent" — telling everyone a fix agent has picked this review up. Run it
-right after \`prr-await\` returns a review you're about to start fixing.
+right after \`reviewloop-await\` returns a review you're about to start fixing.
 
 Arguments:
   <pr>                 PR number (required)
@@ -54,7 +54,7 @@ Exit codes:
 `
 
 function die(msg) {
-  process.stderr.write(`prr ack: ${msg}\n`)
+  process.stderr.write(`reviewloop ack: ${msg}\n`)
   process.exit(1)
 }
 
@@ -113,7 +113,7 @@ if (!repo) {
 
 if (!CONVEX_URL) {
   die(
-    "no Convex URL. Set PRR_CONVEX_URL, config.convexUrl, or run `npx convex dev` first.",
+    "no Convex URL. Set REVIEWLOOP_CONVEX_URL, config.convexUrl, or run `npx convex dev` first.",
   )
 }
 
@@ -136,8 +136,8 @@ try {
   res = await client.mutation(ACK, args)
 } catch (e) {
   process.stderr.write(
-    `prr ack: mutation error: ${String(e)}\n` +
-      `prr ack: (is reviews:ack deployed? this mutation is added by the PR — it won't exist until merge)\n`,
+    `reviewloop ack: mutation error: ${String(e)}\n` +
+      `reviewloop ack: (is reviews:ack deployed? this mutation is added by the PR — it won't exist until merge)\n`,
   )
   process.exit(1)
 }

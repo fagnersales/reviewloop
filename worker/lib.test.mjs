@@ -79,17 +79,17 @@ describe("clean", () => {
 })
 
 describe("resolveConvexUrl", () => {
-  const saved = process.env.PRR_CONVEX_URL
+  const saved = process.env.REVIEWLOOP_CONVEX_URL
   afterAll(() => {
-    if (saved === undefined) delete process.env.PRR_CONVEX_URL
-    else process.env.PRR_CONVEX_URL = saved
+    if (saved === undefined) delete process.env.REVIEWLOOP_CONVEX_URL
+    else process.env.REVIEWLOOP_CONVEX_URL = saved
   })
-  it("prefers the PRR_CONVEX_URL env var over config", () => {
-    process.env.PRR_CONVEX_URL = "https://env.example"
+  it("prefers the REVIEWLOOP_CONVEX_URL env var over config", () => {
+    process.env.REVIEWLOOP_CONVEX_URL = "https://env.example"
     expect(resolveConvexUrl({ convexUrl: "https://cfg.example" })).toBe("https://env.example")
   })
   it("falls back to config when the env var is unset", () => {
-    delete process.env.PRR_CONVEX_URL
+    delete process.env.REVIEWLOOP_CONVEX_URL
     expect(resolveConvexUrl({ convexUrl: "https://cfg.example" })).toBe("https://cfg.example")
   })
 })
@@ -120,7 +120,7 @@ describe("gh-backed helpers", () => {
   const GH_ENV = ["GH_CALL_LOG", "GH_FAIL", "GH_EDIT_FAIL", "GH_ISSUE_VIEW_JSON", "GH_DEFAULT_OUT"]
 
   beforeAll(() => {
-    dir = mkdtempSync(join(tmpdir(), "prr-fake-gh-"))
+    dir = mkdtempSync(join(tmpdir(), "reviewloop-fake-gh-"))
     const script = `#!/bin/sh
 [ -n "$GH_CALL_LOG" ] && echo "$*" >> "$GH_CALL_LOG"
 if [ -n "$GH_FAIL" ]; then echo "gh blew up" >&2; exit 1; fi
@@ -219,7 +219,7 @@ exit 0
 
 // Run streamClaude against `node -e <script>` standing in for the claude CLI.
 function stream(script, extra = {}) {
-  const logFile = join(mkdtempSync(join(tmpdir(), "prr-stream-")), "run.log")
+  const logFile = join(mkdtempSync(join(tmpdir(), "reviewloop-stream-")), "run.log")
   return {
     logFile,
     done: streamClaude({
@@ -287,7 +287,7 @@ describe("streamClaude", () => {
   })
 
   it("resolves with code -1 and the spawn error when the binary is missing", async () => {
-    const logFile = join(mkdtempSync(join(tmpdir(), "prr-stream-")), "run.log")
+    const logFile = join(mkdtempSync(join(tmpdir(), "reviewloop-stream-")), "run.log")
     const r = await streamClaude({
       claudeBin: "/definitely/not/claude",
       args: [],

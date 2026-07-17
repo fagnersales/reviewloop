@@ -1,7 +1,7 @@
 ---
 name: onboard-repo
 description:
-  Configure (onboard) a new repo into prr-console so it is reviewed and, optionally,
+  Configure (onboard) a new repo into reviewloop so it is reviewed and, optionally,
   autonomously solvable — add it to the Convex watch list, set up the GitHub webhook
   (pull_request + issues), and register a dedicated solver checkout. Idempotent:
   re-running only fills in what's missing. Use when the user wants to "configure a
@@ -10,7 +10,7 @@ description:
 argument-hint: "<owner/name> [--review-only]"
 ---
 
-# Onboard a repo into prr-console
+# Onboard a repo into reviewloop
 
 Make a GitHub repo fully wired into this console: **reviewed** (the review worker
 picks up its PRs) and, unless `--review-only`, **solvable** (the solver builds its
@@ -28,10 +28,10 @@ state first, so re-running on a partially-configured repo just completes it.
 ## Where to run
 
 All `npx convex …`, `.env.local` reads, and `worker/solver.config.json` edits run
-from the **prr-console repo root** — the directory this skill lives in
-(`/Users/fagnersales/prototype/prr-console`). `cd` there first (or use absolute
+from the **reviewloop repo root** — the directory this skill lives in
+(`/Users/fagnersales/prototype/reviewloop`). `cd` there first (or use absolute
 paths). The *target* repo (`owner/name`) is only ever touched through `gh --repo`
-and the clone in step 3 — never checked out into prr-console.
+and the clone in step 3 — never checked out into reviewloop.
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ and the clone in step 3 — never checked out into prr-console.
   `admin:repo_hook` scope — `repo` often suffices, but if a `gh api … /hooks` call
   403s, run `gh auth refresh -s admin:repo_hook` and retry (or fall back to the
   manual GitHub UI, below).
-- The prr-console Convex deployment is up and `.env.local` has `VITE_CONVEX_URL`.
+- The reviewloop Convex deployment is up and `.env.local` has `VITE_CONVEX_URL`.
 
 ## Process
 
@@ -191,7 +191,7 @@ gh api repos/owner/name/hooks --jq '.[].events'  # includes pull_request + issue
 Then report concisely:
 
 - ✅ **Reviewed:** watched + webhook (or "via reconcile, no webhook"). New PRs are
-  reviewed automatically; `prr-await`/`prr-ack` work against it.
+  reviewed automatically; `reviewloop-await`/`reviewloop-ack` work against it.
 - ✅ **Solvable** (unless review-only): checkout registered at `<path>`, solver
   (re)started — or the restart the user still needs to do.
 - **To trigger a solve:** label any open issue **`ready-for-agent`** (a human gate —

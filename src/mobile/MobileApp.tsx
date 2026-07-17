@@ -1,4 +1,4 @@
-// The mobile console, per the "PRR Console Mobile" design: one shell owning the
+// The mobile console, per the "reviewloop mobile" design: one shell owning the
 // brand bar, a per-tab list screen (Reviews / Solves / Follow-ups) with filter
 // chips, a bottom tab bar, and a full-screen detail that pushes in from the
 // right. The tab bar lives on the list screen only — the detail covers it.
@@ -360,7 +360,7 @@ export function MobileApp() {
                 <GitPullRequest className="size-4 text-accent" />
               </div>
               <div className="min-w-0">
-                <div className="text-[15px] font-semibold tracking-[-0.01em] text-zinc-100">PRR Console</div>
+                <div className="text-[15px] font-semibold tracking-[-0.01em] text-zinc-100">reviewloop.sh</div>
                 <div className="mt-0.5 flex items-center gap-[5px] font-mono text-[9px] uppercase tracking-[0.13em] text-zinc-600">
                   <span className="size-[5px] rounded-full bg-accent shadow-[0_0_0_3px_rgba(63,185,80,0.12)]" />
                   {readOnly ? "Phone · signed in" : "Local · admin"}

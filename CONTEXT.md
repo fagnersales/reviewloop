@@ -1,4 +1,4 @@
-# PRR Console — domain glossary
+# reviewloop.sh — domain glossary
 
 Names the code uses with a precise meaning. Design conversations and
 architecture reviews should use these terms (and add to this file when a new

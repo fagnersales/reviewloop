@@ -5,7 +5,7 @@ import { useEffect, useState } from "react"
 
 export type View = "reviews" | "solves" | "follow-ups"
 export const VIEWS: readonly View[] = ["reviews", "solves", "follow-ups"]
-const VIEW_KEY = "prr.view"
+const VIEW_KEY = "reviewloop.view"
 
 export function useView() {
   const [view, setView] = useState<View>(() => {

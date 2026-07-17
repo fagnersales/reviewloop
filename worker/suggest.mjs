@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // "Suggest follow-up issues" CLI: `node worker/suggest.mjs --pr <n>`
-// (installed bin: `prr-suggest`).
+// (installed bin: `reviewloop-suggest`).
 //
 // The producer end of the PR-follow-ups loop. A pr-feature agent, at the
 // *unattended* wrap-up of a PR it built, flushes its running follow-ups list here
 // instead of opening GitHub issues directly. Each proposal lands in the
-// prr-console Convex `suggestedIssues` table as a durable proposal; the console is
+// reviewloop Convex `suggestedIssues` table as a durable proposal; the console is
 // the async approval inbox where a human decides which to open. Nothing is filed
 // on GitHub by this CLI — opening happens worker-side off the human's approval,
 // exactly like reviews.
@@ -35,13 +35,13 @@ const SUGGEST = api.suggestedIssues.suggest
 const CATEGORIES = new Set(["bug", "enhancement", "chore"])
 const SOURCES = new Set(["deferred-p2", "disclosed-limitation", "build-tangent"])
 
-const HELP = `prr-suggest — propose follow-up issues from a PR (the producer end)
+const HELP = `reviewloop-suggest — propose follow-up issues from a PR (the producer end)
 
 Usage:
   node worker/suggest.mjs --pr <n> [options] < proposals.json
-  prr-suggest --pr <n> --file proposals.json
+  reviewloop-suggest --pr <n> --file proposals.json
 
-Flushes a pr-feature agent's out-of-scope follow-ups into the prr-console inbox as
+Flushes a pr-feature agent's out-of-scope follow-ups into the reviewloop inbox as
 durable proposals. Nothing is filed on GitHub — a human approves which to open from
 the console, and the worker files those (exactly like reviews). Idempotent: a
 re-run collapses onto existing proposals (counted as duplicates).
@@ -63,12 +63,12 @@ Options:
 
 Exit codes:
   0    proposals recorded (some enqueued and/or duplicates)
-  2    repo isn't watched by prr-console — nothing was recorded
+  2    repo isn't watched by reviewloop — nothing was recorded
   1    usage / connection / input error
 `
 
 function die(msg) {
-  process.stderr.write(`prr suggest: ${msg}\n`)
+  process.stderr.write(`reviewloop suggest: ${msg}\n`)
   process.exit(1)
 }
 
@@ -103,7 +103,7 @@ function parseArgs(argv) {
     } else if (a.startsWith("-")) {
       die(`unknown option: ${a}`)
     } else if (opts.pr === undefined) {
-      // allow a bare positional PR number too, matching prr-await/prr-ack
+      // allow a bare positional PR number too, matching reviewloop-await/reviewloop-ack
       opts.pr = a
     } else {
       die(`unexpected argument: ${a}`)
@@ -162,7 +162,7 @@ if (!repo) {
 }
 
 if (!CONVEX_URL) {
-  die("no Convex URL. Set PRR_CONVEX_URL, config.convexUrl, or run `npx convex dev` first.")
+  die("no Convex URL. Set REVIEWLOOP_CONVEX_URL, config.convexUrl, or run `npx convex dev` first.")
 }
 
 // Resolve the source-PR context (title/url/head) from gh, unless overridden. The
@@ -208,8 +208,8 @@ try {
   })
 } catch (e) {
   process.stderr.write(
-    `prr suggest: mutation error: ${String(e)}\n` +
-      `prr suggest: (is suggestedIssues:suggest deployed? this mutation is added by the PR — it won't exist until merge)\n`,
+    `reviewloop suggest: mutation error: ${String(e)}\n` +
+      `reviewloop suggest: (is suggestedIssues:suggest deployed? this mutation is added by the PR — it won't exist until merge)\n`,
   )
   process.exit(1)
 }
@@ -217,7 +217,7 @@ try {
 if (res.outcome === "unwatched") {
   const out = { ok: false, outcome: "unwatched", repo, prNumber }
   process.stdout.write(JSON.stringify(out) + "\n")
-  log(`not recorded: ${repo} isn't watched by prr-console (add it from the dashboard)`)
+  log(`not recorded: ${repo} isn't watched by reviewloop (add it from the dashboard)`)
   process.exit(2)
 }
 

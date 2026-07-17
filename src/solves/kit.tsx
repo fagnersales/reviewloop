@@ -65,7 +65,7 @@ export function SolveStatusText({ status }: { status: SolveStatus }) {
   const m = SOLVE_META[status]
   return (
     <span className={cn("inline-flex shrink-0 items-center gap-1.5 font-mono text-[9.5px] font-semibold tracking-[0.06em]", m.text)}>
-      <span className={cn("size-[5px] shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
+      <span className={cn("size-[5px] shrink-0 rounded-full", m.dot, m.pulse && "rl-pulse")} />
       {m.label}
     </span>
   )
@@ -75,7 +75,7 @@ export function SolveStatusPill({ status }: { status: SolveStatus }) {
   const m = SOLVE_META[status]
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded border px-2.5 py-[3px] font-mono text-[10px] font-medium", m.text, m.bg, m.border)}>
-      <span className={cn("size-1.5 shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
+      <span className={cn("size-1.5 shrink-0 rounded-full", m.dot, m.pulse && "rl-pulse")} />
       {m.label}
     </span>
   )

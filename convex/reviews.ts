@@ -234,7 +234,7 @@ export const finish = mutation({
 })
 
 // A fix agent acks (or, with `clear`, releases) a review pass — the entrypoint
-// behind the `prr-ack` CLI. Acking stamps the `reviewed` row so the console shows
+// behind the `reviewloop-ack` CLI. Acking stamps the `reviewed` row so the console shows
 // "In progress" instead of "Awaiting agent"; it's the one fact the console can't
 // observe on its own (an agent has started but hasn't pushed a commit yet).
 //
@@ -546,7 +546,7 @@ export const claimable = query({
   },
 })
 
-// A blocking caller (`prr await`) subscribes to this: the single live review row
+// A blocking caller (`reviewloop await`) subscribes to this: the single live review row
 // for one (repo, PR, head SHA). Multiple rows can share that key — a failed
 // attempt followed by a re-enqueue — so we return the most relevant one
 // (preferredPass: a terminal `reviewed` row if any exists, else the newest by

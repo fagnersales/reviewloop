@@ -1,4 +1,4 @@
-# prr-console
+# reviewloop.sh
 
 Event-driven PR review. A GitHub webhook pushes `pull_request` events into a
 standalone Convex deployment; a local worker subscribes over the Convex sync
@@ -12,6 +12,9 @@ the GitHub review link + confidence score).
 
 This replaced the retired `prr` poll loop (the old `~/.local/bin/prr` +
 `~/.pr-review-loop` gh-polling daemon, now removed).
+
+Formerly named **prr-console**. The pre-rename `prr-await`/`prr-ack`/`prr-suggest`
+bin aliases and `PRR_*` env vars are still honored for anything not yet migrated.
 
 ```
 GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signature-256)
@@ -47,7 +50,7 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
    and create a *new, separate* Convex project; do not reuse roblox-auto-delivery):
 
    ```bash
-   cd /Users/fagnersales/prototype/prr-console
+   cd /Users/fagnersales/prototype/reviewloop
    npm install
    npx convex dev          # creates the deployment, writes .env.local, pushes functions
    ```
@@ -121,7 +124,7 @@ issue labelled ready-for-agent ──issues webhook / reconcile──▶ solveTa
         ▼
   worker/solver.mjs ──spawns──▶ claude -p "/pr-feature solve #N"  (cwd = configured checkout)
         │                            │ EnterWorktree → build → open PR (Closes #N)
-        │                            │ → prr-await loop → auto-fix N rounds → STOP
+        │                            │ → reviewloop-await loop → auto-fix N rounds → STOP
         ▼                            ▼
   mark task pr-opened          PR reviewed for FREE by the review half
   (records PR # for lineage)   (pull_request webhook → reviews table → review worker)
@@ -130,7 +133,7 @@ issue labelled ready-for-agent ──issues webhook / reconcile──▶ solveTa
 ```
 
 The elegance: the solver does **not** reimplement build/review/fix. The global
-`pr-feature` skill already does all of it (worktree → build → open PR → `prr-await`
+`pr-feature` skill already does all of it (worktree → build → open PR → `reviewloop-await`
 loop → auto-fix → stop clean). The solver just: find a ready-for-agent issue → claim
 → spawn `pr-feature` in the right folder → capture the PR → clean up.
 
@@ -226,11 +229,11 @@ triage picker). The `claim` itself is also guarded server-side by the atomic Con
 | `maxFixRounds` | cap the internal auto-fix rounds (default 3) before stopping with the PR open |
 | `fallbackReconcileMin` | slow `gh issue list` safety reconcile; `0` to disable (default 20) |
 
-Override the checkout map via the `PRR_SOLVER_CHECKOUTS` env var (JSON); other env:
-`PRR_CONVEX_URL`, `CLAUDE_BIN`. The solve task lifecycle is
+Override the checkout map via the `REVIEWLOOP_SOLVER_CHECKOUTS` env var (JSON); other env:
+`REVIEWLOOP_CONVEX_URL`, `CLAUDE_BIN`. The solve task lifecycle is
 `queued → solving → pr-opened → done | failed` (the `pull_request` merge webhook
 flips `pr-opened → done`, closing the issue → solve → PR lineage). Every autonomous
-spawn sets `PRR_UNATTENDED=1`, the contract that tells `pr-feature` it's headless.
+spawn sets `REVIEWLOOP_UNATTENDED=1`, the contract that tells `pr-feature` it's headless.
 
 ## Verify end-to-end
 
@@ -256,7 +259,7 @@ spawn sets `PRR_UNATTENDED=1`, the contract that tells `pr-feature` it's headles
 **reviewed** / **failed** — no polling, no human in the relay. It's meant to be
 run in the background by an automated caller (Claude Code) right after pushing.
 Invoke it as `node worker/await.mjs <pr>` (or `npm run await -- <pr> …`); the
-installed bin alias is `prr-await <pr>`.
+installed bin alias is `reviewloop-await <pr>`.
 
 ```
 git push ──▶ webhook ──▶ reviews row (queued→reviewing→reviewed)
@@ -296,7 +299,7 @@ Exit codes (so a caller can branch without parsing the JSON):
 | `2` | reviewed with blockers — `p0 \|\| p1 > 0`, **or** the counts were unparseable (`null`); either way, read the review |
 | `3` | failed (`error` in the JSON carries the reason) — last-observed state, not final |
 | `124` | timed out (prints last-known state) |
-| `1` | usage / connection error, or the repo isn't watched by prr-console (self-heal got `unwatched`) |
+| `1` | usage / connection error, or the repo isn't watched by reviewloop (self-heal got `unwatched`) |
 
 Exit `3` is the *last-observed* state, not a final give-up: the worker's fallback
 reconcile (~`fallbackReconcileMin`, default 30 min) re-enqueues open PRs whose only
@@ -330,7 +333,7 @@ background process is still waiting, so the pane looks idle when it isn't.
 `await.mjs` can drive an external indicator to fix that — entirely opt-in, and a
 clean no-op for anyone who doesn't want one (no cmux or anything else required).
 
-If `PRR_AWAIT_HOOK` (or `awaitHook` in config) names an executable, `await` calls
+If `REVIEWLOOP_AWAIT_HOOK` (or `awaitHook` in config) names an executable, `await` calls
 it on two lifecycle edges:
 
 ```
@@ -347,12 +350,12 @@ SIGINT / SIGTERM); it does **not** fire on SIGKILL — `waiterPid` is handed to 
 consumer so it can reap a hard-killed waiter itself.
 
 Forkers wire up their own indicator (tmux statusline, desktop notification, Slack
-ping) by dropping a script and pointing `PRR_AWAIT_HOOK` at it. One is bundled:
+ping) by dropping a script and pointing `REVIEWLOOP_AWAIT_HOOK` at it. One is bundled:
 
 - **cmux** — `integrations/cmux-ring.sh` lights the review ring on the cmux pane:
   orange while waiting, green on a clean pass, red on blockers, amber on a review
   error, grey on timeout. It no-ops outside cmux. Enable it with
-  `export PRR_AWAIT_HOOK="$PWD/integrations/cmux-ring.sh"`. It self-targets the
+  `export REVIEWLOOP_AWAIT_HOOK="$PWD/integrations/cmux-ring.sh"`. It self-targets the
   workspace and the right cmux app instance via the `CMUX_WORKSPACE_ID` /
   `CMUX_SOCKET_PATH` cmux injects into the pane (inherited by the background
   waiter), so there's nothing else to configure; cmux's stale-PID sweep uses the
@@ -371,12 +374,12 @@ up a review it's about to fix. It stamps the `reviews` row (`ackedAt`/`ackedBy`)
 which flips the board badge from **Awaiting agent** to **In progress** and adds an
 "Agent picked it up" step to the review-loop timeline. Invoke it as
 `node worker/ack.mjs <pr>` (or `npm run ack -- <pr> …`); the installed bin alias is
-`prr-ack <pr>`. The natural pairing is **await → ack**:
+`reviewloop-ack <pr>`. The natural pairing is **await → ack**:
 
 ```bash
-prr-await <pr> --repo owner/name --head <sha>   # block until the review lands
+reviewloop-await <pr> --repo owner/name --head <sha>   # block until the review lands
 # … it came back with blockers (exit 2); you're going to fix them:
-prr-ack   <pr> --repo owner/name --head <sha>   # tell the board you're on it
+reviewloop-ack   <pr> --repo owner/name --head <sha>   # tell the board you're on it
 ```
 
 ```bash
@@ -417,7 +420,7 @@ holds only host/runtime settings:
 | `awaitHook` | optional executable `await.mjs` runs on its start/end edges to drive an ambient indicator; empty = none (see [Ambient review-in-progress indicator](#ambient-review-in-progress-indicator-optional)) |
 
 Override any field in `worker/config.local.json` (gitignored), or via env
-(`PRR_CONVEX_URL`, `CLAUDE_BIN`, `PRR_CLONE_DIR`, `PRR_AWAIT_HOOK`).
+(`REVIEWLOOP_CONVEX_URL`, `CLAUDE_BIN`, `REVIEWLOOP_CLONE_DIR`, `REVIEWLOOP_AWAIT_HOOK`).
 
 ### Managing watched repos
 

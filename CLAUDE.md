@@ -30,7 +30,7 @@ to stdout and exits with a verdict code:
 - `0` reviewed, clean (no P0/P1) · `2` reviewed but has P0/P1 blockers (or the
   counts came back unparseable — read the review) · `3` failed (`error` in the
   JSON has the reason) · `124` timeout · `1` usage/connection error, or the repo
-  isn't watched by prr-console (self-heal got `unwatched`).
+  isn't watched by reviewloop (self-heal got `unwatched`).
 
 Exit `3` (failed) is the *last-observed* state, not a final give-up: the worker's
 fallback reconcile (~30 min) re-enqueues open PRs whose only rows for the head SHA
@@ -63,7 +63,8 @@ started until that agent pushes a commit — acking is how you tell it. Run:
 node worker/ack.mjs <pr> --repo <owner/name> --head <sha>
 ```
 
-(installed bin alias: `prr-ack <pr>`). It stamps the `reviews` row for that head
+(installed bin alias: `reviewloop-ack <pr>`; the pre-rename `prr-ack`/`prr-await`/
+`prr-suggest` aliases and `PRR_*` env vars still work). It stamps the `reviews` row for that head
 SHA and exits: `0` acked · `2` nothing to ack (no reviewed pass yet, or the PR is
 merged/closed) · `1` usage/connection error. `--head` defaults to the PR's latest
 pass; `--repo` is auto-resolved from `gh`. When you bail on a PR you acked, release
@@ -77,7 +78,7 @@ The third worker in this repo (beside the review worker and the await/ack CLIs).
 It closes the loop: a GitHub issue labelled **`ready-for-agent`** → the solver
 spawns `claude -p "/pr-feature …"` against a **registered local checkout** (it needs
 the gitignored `.env.local`/`node_modules` a build requires — a throwaway clone
-won't do) → the agent builds it, opens a PR (`Closes #N`), runs its own `prr-await`
+won't do) → the agent builds it, opens a PR (`Closes #N`), runs its own `reviewloop-await`
 auto-fix loop, and **stops**. The opened PR is then reviewed by the review half for
 free. **The solver never merges** — a human does; the `pull_request` merge webhook
 flips the solve task `pr-opened → done`.
@@ -87,9 +88,10 @@ Operator/agent notes if you touch this:
   gitignored — template: `worker/solver.config.example.json`), **not** Convex. A
   watched repo with no registered checkout has its solve **failed fast** with a clear
   reason, never silently stalled.
-- Every autonomous spawn sets **`PRR_UNATTENDED=1`** (the contract that tells
-  `pr-feature` it's headless — flush follow-ups via `prr-suggest`, skip human
-  chatter) and assigns a deterministic branch `solve/issue-<N>-<slug>` so the worker
+- Every autonomous spawn sets **`REVIEWLOOP_UNATTENDED=1`** (the contract that tells
+  `pr-feature` it's headless — flush follow-ups via `reviewloop-suggest`, skip human
+  chatter; the pre-rename `PRR_UNATTENDED=1` is still set alongside it until the
+  skill migrates) and assigns a deterministic branch `solve/issue-<N>-<slug>` so the worker
   can locate the opened PR and clean up the local worktree afterward.
 - Run it with `npm run solver` (separate process from `npm run worker`). It gates on
   the **real GitHub `ready-for-agent` label** (so manually-triaged issues work too),

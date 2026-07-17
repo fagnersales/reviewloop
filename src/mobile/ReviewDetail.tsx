@@ -1,5 +1,5 @@
 // The mobile PR detail: the status/confidence header, the metadata row, and the
-// review loop as a tap-to-expand accordion (per the "PRR Console Mobile" design)
+// review loop as a tap-to-expand accordion (per the "reviewloop mobile" design)
 // — each loop step expands inline to its content (review summary, commit list,
 // live cloud-log, info card) instead of raising a bottom sheet. A PR with no
 // report yet gets a centered focal state (reviewing hero / queued / failed).
@@ -319,7 +319,7 @@ function LoopAccordion({ pr }: { pr: Pr }) {
               </span>
             </button>
             {open && (
-              <div className="prr-fade pb-4 pl-[39px] pr-0.5 pt-1.5">
+              <div className="rl-fade pb-4 pl-[39px] pr-0.5 pt-1.5">
                 <EventBody pr={pr} event={event} passById={passById} now={now} />
               </div>
             )}

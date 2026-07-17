@@ -76,7 +76,7 @@ body {
 
 /* Status-dot pulse for live states (reviewing / solving / in-progress) and the
    soft entrance for the review-loop event detail. */
-@keyframes prr-pulse {
+@keyframes rl-pulse {
   0%,
   100% {
     opacity: 1;
@@ -85,10 +85,10 @@ body {
     opacity: 0.3;
   }
 }
-.prr-pulse {
-  animation: prr-pulse 1.5s ease-in-out infinite;
+.rl-pulse {
+  animation: rl-pulse 1.5s ease-in-out infinite;
 }
-@keyframes prr-fade {
+@keyframes rl-fade {
   from {
     opacity: 0;
     transform: translateY(4px);
@@ -98,8 +98,8 @@ body {
     transform: none;
   }
 }
-.prr-fade {
-  animation: prr-fade 0.25s ease both;
+.rl-fade {
+  animation: rl-fade 0.25s ease both;
 }
 
 @keyframes pulse-dot {

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Blocking "wait for a PR review" CLI: `node worker/await.mjs <pr>`
-// (installed bin: `prr-await <pr>`).
+// (installed bin: `reviewloop-await <pr>`).
 //
-// Subscribes to the prr-console Convex `reviews` row for one
+// Subscribes to the reviewloop Convex `reviews` row for one
 // (repo, prNumber, headSha) over the sync websocket and blocks until that row
 // reaches a terminal state, then prints the result JSON to stdout and exits with
 // a verdict code. Head-SHA keyed, so it waits for THIS push's review — not a
@@ -25,7 +25,7 @@ import { loadConfig, resolveConvexUrl, ghText, ghJson } from "./lib.mjs"
 const cfg = loadConfig()
 const CONVEX_URL = resolveConvexUrl(cfg)
 
-// Optional ambient "review in progress" indicator. If PRR_AWAIT_HOOK (or
+// Optional ambient "review in progress" indicator. If REVIEWLOOP_AWAIT_HOOK (or
 // cfg.awaitHook) names an executable, we invoke it on the two lifecycle edges:
 //   start <waiterPid> <repo> <pr> <sha>   — when we begin blocking
 //   end   <exitCode>  <repo> <pr> <sha>   — when we exit (any graceful path)
@@ -35,7 +35,7 @@ const CONVEX_URL = resolveConvexUrl(cfg)
 // No-op when unset; a failing or slow hook never affects the verdict. waiterPid
 // is our own pid, forwarded so a consumer can reap us if we're hard-killed
 // (SIGKILL skips the `end` edge).
-const HOOK = process.env.PRR_AWAIT_HOOK || cfg.awaitHook
+const HOOK = process.env.REVIEWLOOP_AWAIT_HOOK || process.env.PRR_AWAIT_HOOK || cfg.awaitHook
 let hookStarted = false
 function fireHook(...args) {
   if (!HOOK) return
@@ -51,12 +51,12 @@ function fireHook(...args) {
 // is actually *deployed* is decided at runtime and surfaced via onQueryError.
 const GET_BY_PR_SHA = api.reviews.getByPrSha
 
-const HELP = `prr-await — block until a PR's review finishes
+const HELP = `reviewloop-await — block until a PR's review finishes
 
 Usage:
   node worker/await.mjs <pr> [options]
 
-Subscribes to the prr-console Convex review row for this PR's head commit and
+Subscribes to the reviewloop Convex review row for this PR's head commit and
 blocks until it is reviewed/failed, then prints the result JSON to stdout.
 
 If no row exists after ~60s (a dropped webhook delivery), it self-heals by
@@ -82,12 +82,12 @@ Exit codes:
   2    reviewed with P0/P1 blockers (or counts unparseable — read the review)
   3    failed
   124  timeout (prints last-known state)
-  1    usage / connection error, or repo not watched by prr-console
+  1    usage / connection error, or repo not watched by reviewloop
 `
 
 // ── arg parsing ──────────────────────────────────────────────────────────────
 function die(msg) {
-  process.stderr.write(`prr await: ${msg}\n`)
+  process.stderr.write(`reviewloop await: ${msg}\n`)
   process.exit(1)
 }
 
@@ -156,7 +156,7 @@ if (!headSha) {
 
 if (!CONVEX_URL) {
   die(
-    "no Convex URL. Set PRR_CONVEX_URL, config.convexUrl, or run `npx convex dev` first.",
+    "no Convex URL. Set REVIEWLOOP_CONVEX_URL, config.convexUrl, or run `npx convex dev` first.",
   )
 }
 
@@ -239,8 +239,8 @@ async function onQueryError(e) {
   clearTimeout(timeoutTimer)
   clearTimeout(missingTimer)
   process.stderr.write(
-    `prr await: query error: ${String(e)}\n` +
-      `prr await: (is reviews:getByPrSha deployed? this query is added by the PR — it won't exist until merge)\n`,
+    `reviewloop await: query error: ${String(e)}\n` +
+      `reviewloop await: (is reviews:getByPrSha deployed? this query is added by the PR — it won't exist until merge)\n`,
   )
   await client.close().catch(() => {})
   process.exit(1)
@@ -255,7 +255,7 @@ try {
     onQueryError,
   )
 } catch (e) {
-  process.stderr.write(`prr await: failed to subscribe: ${String(e)}\n`)
+  process.stderr.write(`reviewloop await: failed to subscribe: ${String(e)}\n`)
   await client.close().catch(() => {})
   process.exit(1)
 }
@@ -291,7 +291,7 @@ async function selfHeal() {
   // still heals it.
   if (!meta) {
     process.stderr.write(
-      `prr await: couldn't fetch PR state for ${repo}#${prNumber} after 60s — ` +
+      `reviewloop await: couldn't fetch PR state for ${repo}#${prNumber} after 60s — ` +
         `not self-healing; the worker's reconcile will heal it if it's open. ` +
         `Waiting until --timeout\n`,
     )
@@ -304,7 +304,7 @@ async function selfHeal() {
   // gh `state` is uppercase (OPEN/CLOSED/MERGED).
   if (meta.isDraft === true || (meta.state && meta.state !== "OPEN")) {
     process.stderr.write(
-      `prr await: no row for ${short} after 60s, but ${repo}#${prNumber} is ` +
+      `reviewloop await: no row for ${short} after 60s, but ${repo}#${prNumber} is ` +
         `${meta.isDraft ? "a draft" : String(meta.state).toLowerCase()} — ` +
         `not self-healing (drafts/closed PRs aren't reviewed). Waiting until --timeout\n`,
     )
@@ -332,7 +332,7 @@ async function selfHeal() {
     })
   } catch (e) {
     process.stderr.write(
-      `prr await: no row for ${short} after 60s and self-heal enqueue failed: ${String(e)} — ` +
+      `reviewloop await: no row for ${short} after 60s and self-heal enqueue failed: ${String(e)} — ` +
         `is the worker running and ${repo} watched? still waiting until --timeout\n`,
     )
     return
@@ -348,7 +348,7 @@ async function selfHeal() {
     clearTimeout(timeoutTimer)
     clearTimeout(missingTimer)
     process.stderr.write(
-      `prr await: ${repo} is not watched by prr-console — no review will be queued. ` +
+      `reviewloop await: ${repo} is not watched by reviewloop — no review will be queued. ` +
         `Add it in the dashboard / worker/config.json.\n`,
     )
     await client.close().catch(() => {})
@@ -374,7 +374,7 @@ const missingTimer = setTimeout(() => {
 // Hard timeout: dump last-known state and exit 124.
 const timeoutTimer = setTimeout(() => {
   process.stderr.write(
-    `prr await: timed out after ${opts.timeout}s waiting on ${repo}#${prNumber} @${short}\n`,
+    `reviewloop await: timed out after ${opts.timeout}s waiting on ${repo}#${prNumber} @${short}\n`,
   )
   settle(lastRow, lastRow?.status ?? "timeout", 124)
 }, opts.timeout * 1000)
@@ -387,7 +387,7 @@ async function shutdown() {
   settled = true
   clearTimeout(timeoutTimer)
   clearTimeout(missingTimer)
-  process.stderr.write("\nprr await: interrupted\n")
+  process.stderr.write("\nreviewloop await: interrupted\n")
   await client.close().catch(() => {})
   process.exit(1)
 }

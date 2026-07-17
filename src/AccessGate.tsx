@@ -86,7 +86,7 @@ function PasscodePrompt({
             <Lock className="size-4 text-sky-300" />
           </div>
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-zinc-100">PR Review Console</div>
+            <div className="text-sm font-semibold text-zinc-100">reviewloop.sh</div>
             <div className="text-xs text-zinc-600">Enter passcode to view</div>
           </div>
         </div>

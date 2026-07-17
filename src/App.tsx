@@ -845,7 +845,7 @@ function ReviewDetail({ pr, hasPrs, isAll }: { pr: Pr | null; hasPrs: boolean; i
             <Timeline events={events} selectedId={selectedEvent?.id ?? null} onSelect={setSelectedId} />
           </div>
           <div key={selectedEvent?.id ?? "none"} className="min-h-0 overflow-y-auto p-4">
-            <div className="prr-fade">
+            <div className="rl-fade">
               <EventDetail pr={pr} event={selectedEvent} passById={passById} />
             </div>
           </div>
