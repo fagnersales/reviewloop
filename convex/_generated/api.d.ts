@@ -11,6 +11,7 @@
 import type * as access from "../access.js";
 import type * as crons from "../crons.js";
 import type * as http from "../http.js";
+import type * as prStatus from "../prStatus.js";
 import type * as repos from "../repos.js";
 import type * as reviews from "../reviews.js";
 import type * as solveTasks from "../solveTasks.js";
@@ -26,6 +27,7 @@ declare const fullApi: ApiFromModules<{
   access: typeof access;
   crons: typeof crons;
   http: typeof http;
+  prStatus: typeof prStatus;
   repos: typeof repos;
   reviews: typeof reviews;
   solveTasks: typeof solveTasks;

@@ -133,43 +133,16 @@ export function findingsLine(x: { p0?: number; p1?: number; p2?: number }) {
   return parts.join(" · ")
 }
 
-// The lifecycle state a PR row resolves to — the single source of truth for both
-// the (mobile) icon badge and the (desktop) design badges. The "reviewed" pass
-// fans out into three meanings the console exists to surface: an agent acked it
-// (someone's on it), it has blockers / unparseable counts and nobody's acked
-// (awaiting an agent — mirrors prr-await, which treats a parse miss as a blocker
-// so it never reads as clean), or it's clean (verified, ready to merge).
-export type StatusKey =
-  | "verified"
-  | "awaiting"
-  | "inprogress"
-  | "reviewing"
-  | "queued"
-  | "failed"
-  | "merged"
-  | "closed"
-
-export function prStatusKey(pr: Pr): StatusKey {
-  if (pr.prState === "merged") return "merged"
-  if (pr.prState === "closed") return "closed"
-  switch (pr.status) {
-    case "reviewing":
-      return "reviewing"
-    case "queued":
-      return "queued"
-    case "failed":
-      return "failed"
-    case "reviewed":
-      if (pr.ackedAt != null) return "inprogress"
-      if (pr.p0 == null || pr.p1 == null || pr.p0 > 0 || pr.p1 > 0) return "awaiting"
-      return "verified"
-  }
-}
+// The lifecycle state a PR row resolves to — computed server-side by
+// convex/prStatus.ts and shipped on the `prs` query as `pr.statusKey`, so the
+// rules (ack → in progress, blockers/unparseable counts → awaiting, clean →
+// verified) live in one module and the client only maps states to tones.
+export type StatusKey = Pr["statusKey"]
 
 export type StatusDisplay = { label: string; icon: LucideIcon; tone: string; spin?: boolean }
 
-// The legacy icon-pill badge (still used by the mobile view). Derived from
-// prStatusKey so the lifecycle logic lives in exactly one place.
+// The legacy icon-pill badge (still used by the mobile view). Keyed on the
+// served statusKey so the lifecycle logic lives in exactly one place.
 const STATUS_LEGACY: Record<StatusKey, StatusDisplay> = {
   merged: { label: "Merged", icon: GitMerge, tone: "border-violet-400/25 bg-violet-400/10 text-violet-200" },
   closed: { label: "Closed", icon: GitPullRequestClosed, tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400" },
@@ -182,7 +155,7 @@ const STATUS_LEGACY: Record<StatusKey, StatusDisplay> = {
 }
 
 export function statusDisplay(pr: Pr): StatusDisplay {
-  return STATUS_LEGACY[prStatusKey(pr)]
+  return STATUS_LEGACY[pr.statusKey]
 }
 
 // ── design-palette status + confidence metas (desktop console) ───────────────
@@ -421,7 +394,7 @@ export function EventGlyph({ kind }: { kind: EventKind }) {
 // headers wear the same colours as a bordered pill.
 
 export function PrStatusText({ pr }: { pr: Pr }) {
-  const m = STATUS_META[prStatusKey(pr)]
+  const m = STATUS_META[pr.statusKey]
   return (
     <span className={cn("inline-flex shrink-0 items-center gap-1.5 font-mono text-[10px] font-semibold tracking-[0.06em]", m.text)}>
       <span className={cn("size-[5px] shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
@@ -431,7 +404,7 @@ export function PrStatusText({ pr }: { pr: Pr }) {
 }
 
 export function PrStatusPill({ pr }: { pr: Pr }) {
-  const m = STATUS_META[prStatusKey(pr)]
+  const m = STATUS_META[pr.statusKey]
   return (
     <span className={cn("inline-flex items-center gap-1.5 rounded border px-2.5 py-[3px] font-mono text-[10px] font-medium", m.text, m.bg, m.border)}>
       <span className={cn("size-1.5 shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />

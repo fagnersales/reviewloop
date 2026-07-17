@@ -1,9 +1,16 @@
 import { v } from "convex/values"
 import { mutation, query, internalMutation } from "./_generated/server"
 import type { MutationCtx } from "./_generated/server"
-import type { Doc, Id } from "./_generated/dataModel"
+import type { Id } from "./_generated/dataModel"
 import { commitInfo, logKind, reviewFields, reviewStatus } from "./schema"
 import { MAX_WATCHED_REPOS } from "./repos"
+import {
+  groupByPr,
+  latestPass,
+  preferredPass,
+  statusKey,
+  statusKeyValidator,
+} from "./prStatus"
 
 const STALE_MS = 25 * 60 * 1000 // a "reviewing" row older than this = crashed worker
 
@@ -260,10 +267,10 @@ export const ack = mutation({
       .collect()
     if (rows.length === 0) return { ok: false, reason: "no review row for this PR" }
 
-    // Pick the pass to ack: the exact head SHA if given (preferring its reviewed
-    // row over a stale failed attempt), else the PR's *latest* pass.
+    // Pick the pass to ack: the exact head SHA if given (preferredPass: its
+    // reviewed row over a stale failed attempt), else the PR's *latest* pass.
     //
-    // For the no-head case, "latest pass" (newest queuedAt across all statuses) is
+    // For the no-head case, latestPass (newest queuedAt across all statuses) is
     // deliberately what the board surfaces (prs() reads latest.ackedAt) — NOT the
     // newest *reviewed* pass. If a re-push raced in between await and ack, the
     // newest reviewed row is already superseded; acking it would silently no-op on
@@ -275,11 +282,9 @@ export const ack = mutation({
       const forSha = rows.filter((r) => r.headSha === headSha)
       if (forSha.length === 0)
         return { ok: false, reason: `no review row for ${headSha.slice(0, 7)}` }
-      target =
-        forSha.find((r) => r.status === "reviewed") ??
-        forSha.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+      target = preferredPass(forSha)
     } else {
-      target = rows.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+      target = latestPass(rows)
     }
 
     if (target.status !== "reviewed")
@@ -323,7 +328,7 @@ export const requestMerge = mutation({
       .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
       .collect()
     if (rows.length === 0) return { ok: false, reason: "no review row for this PR" }
-    const target = rows.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+    const target = latestPass(rows)
     if (target.status !== "reviewed")
       return { ok: false, reason: `pass is ${target.status}, not reviewed`, headSha: target.headSha }
     if (target.prState)
@@ -424,14 +429,9 @@ export const clearStaleAcks = internalMutation({
       .withIndex("by_status", (q) => q.eq("status", "failed"))
       .order("desc")
       .take(50)
-    const latest = new Map<string, Doc<"reviews">>()
-    for (const r of [...reviewing, ...queued, ...reviewed, ...failed]) {
-      const key = `${r.repo}#${r.prNumber}`
-      const cur = latest.get(key)
-      if (!cur || r.queuedAt > cur.queuedAt) latest.set(key, r)
-    }
     let cleared = 0
-    for (const r of latest.values()) {
+    for (const rows of groupByPr([...reviewing, ...queued, ...reviewed, ...failed]).values()) {
+      const r = latestPass(rows)
       // A merged/closed PR can't be picked up again, so clearing its ack buys no
       // honesty — it only erases the "Agent picked it up" history of real work.
       // Skip it (matches the "superseded acks are kept" rule); only live reviewed
@@ -548,9 +548,9 @@ export const claimable = query({
 
 // A blocking caller (`prr await`) subscribes to this: the single live review row
 // for one (repo, PR, head SHA). Multiple rows can share that key — a failed
-// attempt followed by a re-enqueue — so we return the most relevant one: a
-// terminal `reviewed` row if any exists, else the newest by `queuedAt`. Null
-// until a webhook/rescan first queues this head SHA.
+// attempt followed by a re-enqueue — so we return the most relevant one
+// (preferredPass: a terminal `reviewed` row if any exists, else the newest by
+// `queuedAt`). Null until a webhook/rescan first queues this head SHA.
 export const getByPrSha = query({
   args: {
     repo: v.string(),
@@ -566,9 +566,7 @@ export const getByPrSha = query({
       )
       .collect()
     if (rows.length === 0) return null
-    const reviewed = rows.filter((r) => r.status === "reviewed")
-    const pool = reviewed.length ? reviewed : rows
-    return pool.reduce((a, b) => (b.queuedAt > a.queuedAt ? b : a))
+    return preferredPass(rows)
   },
 })
 
@@ -640,31 +638,10 @@ export const board = query({
   },
 })
 
-// One review pass = one `reviews` row (one head SHA of a PR).
-const prPass = v.object({
-  _id: v.id("reviews"),
-  headSha: v.string(),
-  status: reviewStatus,
-  queuedAt: v.number(),
-  startedAt: v.optional(v.number()),
-  finishedAt: v.optional(v.number()),
-  confidence: v.optional(v.number()),
-  reviewEffort: v.optional(v.number()),
-  p0: v.optional(v.number()),
-  p1: v.optional(v.number()),
-  p2: v.optional(v.number()),
-  report: v.optional(v.string()),
-  reviewUrl: v.optional(v.string()),
-  progress: v.optional(v.string()),
-  error: v.optional(v.string()),
-  worker: v.optional(v.string()),
-  commits: v.optional(v.array(commitInfo)),
-  ackedAt: v.optional(v.number()),
-  ackedBy: v.optional(v.string()),
-})
-
 // A PR = every review pass for one (repo, prNumber), with the latest pass's
-// state surfaced for the list/header.
+// state surfaced for the list/header. A pass is served as the full `reviews`
+// row (reviewDoc) — no projection to hand-maintain; adding a column is a
+// schema-only change.
 const prDoc = v.object({
   key: v.string(),
   repo: v.string(),
@@ -674,6 +651,9 @@ const prDoc = v.object({
   prUrl: v.string(),
   headSha: v.string(),
   status: reviewStatus,
+  // The lifecycle state this PR resolves to — computed here (convex/prStatus.ts)
+  // so every consumer reads the same answer instead of re-deriving it.
+  statusKey: statusKeyValidator,
   prState: v.optional(v.union(v.literal("merged"), v.literal("closed"))),
   confidence: v.optional(v.number()),
   p0: v.optional(v.number()),
@@ -695,7 +675,7 @@ const prDoc = v.object({
   // the first pass's queuedAt / updatedAt.
   prCreatedAt: v.optional(v.number()),
   closedAt: v.optional(v.number()),
-  passes: v.array(prPass),
+  passes: v.array(reviewDoc),
 })
 
 // The dashboard subscribes to this: every PR with active or recent review
@@ -725,19 +705,11 @@ export const prs = query({
       .order("desc")
       .take(50)
 
-    const groups = new Map<string, Doc<"reviews">[]>()
-    for (const row of [...reviewing, ...queued, ...reviewed, ...failed]) {
-      const key = `${row.repo}#${row.prNumber}`
-      const arr = groups.get(key)
-      if (arr) arr.push(row)
-      else groups.set(key, [row])
-    }
-
     const result = []
-    for (const [key, rows] of groups) {
+    for (const [key, rows] of groupByPr([...reviewing, ...queued, ...reviewed, ...failed])) {
       // passes oldest-first = the review loop in chronological order
       rows.sort((a, b) => a.queuedAt - b.queuedAt)
-      const latest = rows[rows.length - 1]
+      const latest = latestPass(rows)
       const prState = rows.find((r) => r.prState)?.prState
       // GitHub stamps every row of the PR identically, so the first non-null wins
       const prCreatedAt = rows.find((r) => r.prCreatedAt != null)?.prCreatedAt
@@ -751,6 +723,13 @@ export const prs = query({
         prUrl: latest.prUrl,
         headSha: latest.headSha,
         status: latest.status,
+        statusKey: statusKey({
+          prState,
+          status: latest.status,
+          ackedAt: latest.ackedAt,
+          p0: latest.p0,
+          p1: latest.p1,
+        }),
         prState,
         confidence: latest.confidence,
         p0: latest.p0,
@@ -765,27 +744,7 @@ export const prs = query({
         updatedAt: latest.finishedAt ?? latest.startedAt ?? latest.queuedAt,
         prCreatedAt,
         closedAt,
-        passes: rows.map((r) => ({
-          _id: r._id,
-          headSha: r.headSha,
-          status: r.status,
-          queuedAt: r.queuedAt,
-          startedAt: r.startedAt,
-          finishedAt: r.finishedAt,
-          confidence: r.confidence,
-          reviewEffort: r.reviewEffort,
-          p0: r.p0,
-          p1: r.p1,
-          p2: r.p2,
-          report: r.report,
-          reviewUrl: r.reviewUrl,
-          progress: r.progress,
-          error: r.error,
-          worker: r.worker,
-          commits: r.commits,
-          ackedAt: r.ackedAt,
-          ackedBy: r.ackedBy,
-        })),
+        passes: rows,
       })
     }
     // newest PR activity first

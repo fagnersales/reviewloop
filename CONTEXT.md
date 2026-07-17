@@ -7,7 +7,17 @@ one crystallizes).
 - **Review pass** — one review of one push: a `reviews` row keyed by
   (repo, prNumber, headSha). A PR accumulates passes as it's pushed to; the
   **latest pass** (max `queuedAt`) is the one the board shows and that
-  ack/merge act on.
+  ack/merge act on. Canonical rules: `latestPass` / `preferredPass` in
+  `convex/prStatus.ts` (preferred = a reviewed row beats a newer failed retry
+  of the same SHA).
+
+- **PR status (`statusKey`)** — the 8-state lifecycle a PR resolves to
+  (`verified · awaiting · inprogress · reviewing · queued · failed · merged ·
+  closed`), computed server-side by `statusKey` in `convex/prStatus.ts` and
+  shipped on the `prs` query; the frontend only maps it to tones. A `reviewed`
+  pass fans out by ack + finding counts, and an unparseable count is never
+  clean (`passVerdict` — mirrored in plain JS by `worker/await.mjs`'s exit
+  code rule).
 
 - **State-role label** — one of the six mutually-exclusive GitHub labels that
   encode where a follow-up issue sits in its lifecycle:
