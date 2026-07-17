@@ -6,10 +6,8 @@ import { useEffect, useState } from "react"
 import { type FunctionReturnType } from "convex/server"
 import Markdown from "markdown-to-jsx"
 import {
-  Activity,
   AlertTriangle,
   Check,
-  CheckCircle2,
   Clock3,
   GitCommit,
   GitMerge,
@@ -18,8 +16,6 @@ import {
   Hand,
   Loader2,
   type LucideIcon,
-  Rows3,
-  XCircle,
 } from "lucide-react"
 import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
@@ -139,25 +135,6 @@ export function findingsLine(x: { p0?: number; p1?: number; p2?: number }) {
 // verified) live in one module and the client only maps states to tones.
 export type StatusKey = Pr["statusKey"]
 
-export type StatusDisplay = { label: string; icon: LucideIcon; tone: string; spin?: boolean }
-
-// The legacy icon-pill badge (still used by the mobile view). Keyed on the
-// served statusKey so the lifecycle logic lives in exactly one place.
-const STATUS_LEGACY: Record<StatusKey, StatusDisplay> = {
-  merged: { label: "Merged", icon: GitMerge, tone: "border-violet-400/25 bg-violet-400/10 text-violet-200" },
-  closed: { label: "Closed", icon: GitPullRequestClosed, tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400" },
-  reviewing: { label: "Reviewing", icon: Loader2, tone: "border-sky-400/25 bg-sky-400/10 text-sky-200", spin: true },
-  queued: { label: "Queued", icon: Clock3, tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400" },
-  inprogress: { label: "In progress", icon: Activity, tone: "border-indigo-400/25 bg-indigo-400/10 text-indigo-200" },
-  awaiting: { label: "Awaiting agent", icon: Hand, tone: "border-amber-400/25 bg-amber-400/10 text-amber-200" },
-  verified: { label: "Reviewed", icon: CheckCircle2, tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200" },
-  failed: { label: "Failed", icon: XCircle, tone: "border-red-400/25 bg-red-400/10 text-red-200" },
-}
-
-export function statusDisplay(pr: Pr): StatusDisplay {
-  return STATUS_LEGACY[pr.statusKey]
-}
-
 // ── design-palette status + confidence metas (desktop console) ───────────────
 // Tailwind class fragments matching the design's exact hex: a colored uppercase
 // mono label + dot for list rows, and the same colors in a bordered pill for
@@ -187,38 +164,8 @@ export function confMeta(score?: number): ConfMeta {
   return { text, color: "text-[#86efac]", bg: "bg-[#3fb950]/10", border: "border-[#3fb950]/30", star: true }
 }
 
-export function scoreTone(score?: number) {
-  if (score == null) return "border-zinc-700 bg-zinc-900 text-zinc-500"
-  if (score >= 4) return "border-emerald-400/25 bg-emerald-400/10 text-emerald-200"
-  if (score >= 3) return "border-amber-400/25 bg-amber-400/10 text-amber-200"
-  return "border-red-400/25 bg-red-400/10 text-red-200"
-}
-
 export function githubCommitUrl(repo: string, sha: string) {
   return `https://github.com/${repo}/commit/${sha}`
-}
-
-export function eventIcon(kind: EventKind): LucideIcon {
-  switch (kind) {
-    case "opened":
-      return GitPullRequest
-    case "review":
-      return Rows3
-    case "agent":
-      return Loader2
-    case "ack":
-      return Hand
-    case "queued":
-      return Clock3
-    case "commit":
-      return GitCommit
-    case "merged":
-      return GitMerge
-    case "failed":
-      return AlertTriangle
-    case "closed":
-      return GitPullRequestClosed
-  }
 }
 
 export function buildEvents(pr: Pr): TimelineEvent[] {
@@ -334,62 +281,7 @@ export function buildEvents(pr: Pr): TimelineEvent[] {
   return events
 }
 
-// ── presentational atoms ────────────────────────────────────────────────────
-
-export function StatusBadge({ pr, className }: { pr: Pr; className?: string }) {
-  const s = statusDisplay(pr)
-  const Icon = s.icon
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
-        s.tone,
-        className,
-      )}
-    >
-      <Icon className={cn("size-3", s.spin && "animate-spin")} />
-      {s.label}
-    </span>
-  )
-}
-
-export function ScoreBadge({ score, className }: { score?: number; className?: string }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex rounded-md border px-1.5 py-0.5 text-[11px] font-semibold",
-        scoreTone(score),
-        className,
-      )}
-    >
-      {score != null ? `${score}/5` : "new"}
-    </span>
-  )
-}
-
-export function EventGlyph({ kind }: { kind: EventKind }) {
-  const Icon = eventIcon(kind)
-  return (
-    <span
-      className={cn(
-        "relative z-10 flex size-7 shrink-0 items-center justify-center rounded-md border bg-zinc-950",
-        kind === "agent" && "border-sky-400/30 text-sky-300",
-        kind === "ack" && "border-indigo-400/30 text-indigo-300",
-        kind === "review" && "border-amber-400/30 text-amber-300",
-        kind === "commit" && "border-violet-400/30 text-violet-300",
-        kind === "merged" && "border-emerald-400/30 text-emerald-300",
-        kind === "failed" && "border-red-400/30 text-red-300",
-        kind === "queued" && "border-zinc-700 text-zinc-400",
-        kind === "closed" && "border-zinc-700 text-zinc-400",
-        kind === "opened" && "border-zinc-700 text-zinc-400",
-      )}
-    >
-      <Icon className={cn("size-3.5", kind === "agent" && "animate-spin")} />
-    </span>
-  )
-}
-
-// ── design-palette atoms (desktop console) ──────────────────────────────────
+// ── design-palette atoms ────────────────────────────────────────────────────
 // List rows wear the status/confidence as bare coloured mono text + dot; detail
 // headers wear the same colours as a bordered pill.
 

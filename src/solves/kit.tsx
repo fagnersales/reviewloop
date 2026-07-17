@@ -1,17 +1,9 @@
 // Solves kit: the Convex-row type, the solve-status vocabulary, and the
-// presentational atoms for the autonomous-solver view. The interactive surfaces
-// (rows, detail) live in Solves.tsx; this is the shared vocabulary. The view is
+// design-palette atoms for the autonomous-solver view — shared by the desktop
+// two-pane (Solves.tsx) and the mobile console (src/mobile). The view is
 // read-only — a solve is autonomous, and the only human action (merging the PR)
 // happens on GitHub — so there are no action affordances here, just status.
 import { type FunctionReturnType } from "convex/server"
-import {
-  AlertTriangle,
-  Clock,
-  GitMerge,
-  GitPullRequest,
-  Loader2,
-  type LucideIcon,
-} from "lucide-react"
 import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
 
@@ -20,43 +12,26 @@ export type SolveBoard = FunctionReturnType<typeof api.solveTasks.board>
 export type SolveTask = SolveBoard["solving"][number]
 export type SolveStatus = SolveTask["status"]
 
-// queued → amber (waiting) · solving → sky (building, spinner) · pr-opened →
-// violet (PR up, awaiting a human merge) · done → emerald (merged) · failed → rose.
-export const SOLVE_STATUS: Record<
+// The console's design palette: status as a coloured uppercase mono label (rows)
+// / dot + label pill (headers), with the live state pulsing. queued → amber
+// (waiting) · solving → sky (building) · pr-opened → violet (PR up, awaiting a
+// human merge) · done → emerald (merged) · failed → red.
+export const SOLVE_META: Record<
   SolveStatus,
-  { label: string; dot: string; tone: string; icon: LucideIcon; spin?: boolean }
+  { label: string; text: string; dot: string; bg: string; border: string; pulse: boolean }
 > = {
-  queued: {
-    label: "Queued",
-    dot: "bg-amber-400",
-    tone: "border-amber-400/25 bg-amber-400/10 text-amber-200",
-    icon: Clock,
-  },
-  solving: {
-    label: "Solving",
-    dot: "bg-sky-400",
-    tone: "border-sky-400/25 bg-sky-400/10 text-sky-200",
-    icon: Loader2,
-    spin: true,
-  },
-  "pr-opened": {
-    label: "PR opened",
-    dot: "bg-violet-400",
-    tone: "border-violet-400/25 bg-violet-400/10 text-violet-200",
-    icon: GitPullRequest,
-  },
-  done: {
-    label: "Merged",
-    dot: "bg-emerald-400",
-    tone: "border-emerald-400/25 bg-emerald-400/10 text-emerald-200",
-    icon: GitMerge,
-  },
-  failed: {
-    label: "Failed",
-    dot: "bg-rose-500",
-    tone: "border-rose-500/25 bg-rose-500/10 text-rose-200",
-    icon: AlertTriangle,
-  },
+  queued: { label: "QUEUED", text: "text-[#fcd34d]", dot: "bg-[#e3b341]", bg: "bg-[#e3b341]/10", border: "border-[#e3b341]/30", pulse: false },
+  solving: { label: "SOLVING", text: "text-[#7dd3fc]", dot: "bg-[#38bdf8]", bg: "bg-[#38bdf8]/10", border: "border-[#38bdf8]/30", pulse: true },
+  "pr-opened": { label: "PR OPENED", text: "text-[#d8b4fe]", dot: "bg-[#a371f7]", bg: "bg-[#a371f7]/10", border: "border-[#a371f7]/30", pulse: false },
+  done: { label: "MERGED", text: "text-[#86efac]", dot: "bg-[#3fb950]", bg: "bg-[#3fb950]/10", border: "border-[#3fb950]/30", pulse: false },
+  failed: { label: "FAILED", text: "text-[#fca5a5]", dot: "bg-[#f85149]", bg: "bg-[#f85149]/10", border: "border-[#f85149]/30", pulse: false },
+}
+
+// The "what happens next" explainer for the states that aren't self-evident.
+export const SOLVE_NOTE: Partial<Record<SolveStatus, string>> = {
+  queued: "Waiting for an available solver worker. The /pr-feature run starts once a slot frees up.",
+  "pr-opened": "The agent opened a PR and stopped — solvers never merge. A human reviews and merges it on GitHub.",
+  done: "The PR was merged on GitHub, closing the issue → solve → PR lineage. Nothing more to do.",
 }
 
 export const solveIssueUrl = (t: SolveTask) =>
@@ -76,32 +51,32 @@ export function orderSolves(board: SolveBoard | undefined): SolveTask[] {
   return [...solving, ...queued, ...recent]
 }
 
-// A solid status dot; the solving state gets a soft pulse so the board reads as live.
-export function SolveStateDot({ status }: { status: SolveStatus }) {
-  const s = SOLVE_STATUS[status]
+// The one-line, status-coloured subtitle under a row's title.
+export function solveSub(t: SolveTask): { text: string; cls: string } {
+  if (t.status === "solving") return { text: t.progress || "Starting…", cls: "text-[#7dd3fc]" }
+  if (t.status === "queued") return { text: "Waiting for a solver", cls: "text-zinc-500" }
+  if (t.status === "failed") return { text: t.error || "Failed", cls: "text-[#fca5a5]" }
+  if (t.status === "done" && t.prNumber != null) return { text: `Merged · PR #${t.prNumber}`, cls: "text-zinc-500" }
+  if (t.prNumber != null) return { text: `Opened PR #${t.prNumber}`, cls: "text-zinc-500" }
+  return { text: SOLVE_META[t.status].label, cls: "text-zinc-500" }
+}
+
+export function SolveStatusText({ status }: { status: SolveStatus }) {
+  const m = SOLVE_META[status]
   return (
-    <span className="relative inline-flex">
-      <span className={cn("size-2 shrink-0 rounded-full", s.dot)} />
-      {status === "solving" && (
-        <span className={cn("absolute inset-0 animate-ping rounded-full opacity-60", s.dot)} />
-      )}
+    <span className={cn("inline-flex shrink-0 items-center gap-1.5 font-mono text-[9.5px] font-semibold tracking-[0.06em]", m.text)}>
+      <span className={cn("size-[5px] shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
+      {m.label}
     </span>
   )
 }
 
-// The status chip: tone + icon + label, with a spinner while solving.
-export function StatusPill({ status }: { status: SolveStatus }) {
-  const s = SOLVE_STATUS[status]
-  const Icon = s.icon
+export function SolveStatusPill({ status }: { status: SolveStatus }) {
+  const m = SOLVE_META[status]
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
-        s.tone,
-      )}
-    >
-      <Icon className={cn("size-3", s.spin && "animate-spin")} />
-      {s.label}
+    <span className={cn("inline-flex items-center gap-1.5 rounded border px-2.5 py-[3px] font-mono text-[10px] font-medium", m.text, m.bg, m.border)}>
+      <span className={cn("size-1.5 shrink-0 rounded-full", m.dot, m.pulse && "prr-pulse")} />
+      {m.label}
     </span>
   )
 }

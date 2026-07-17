@@ -48,10 +48,11 @@ import {
 } from "./review/kit"
 import { FilterDropdown, type FilterOption } from "./ui/FilterDropdown"
 import { PhoneAccess } from "./ui/PhoneAccess"
-import { MobileView } from "./mobile/MobileView"
+import { MobileApp } from "./mobile/MobileApp"
 import { useReadOnly } from "./read-only"
-import { FollowUpsDesktop, FollowUpsMobile } from "./follow-ups/FollowUps"
-import { SolvesDesktop, SolvesMobile } from "./solves/Solves"
+import { useView } from "./lib/view"
+import { FollowUpsDesktop } from "./follow-ups/FollowUps"
+import { SolvesDesktop } from "./solves/Solves"
 
 // ── small shared pieces ──────────────────────────────────────────────────────
 
@@ -1005,22 +1006,8 @@ function ReviewConsole({
 // ── top-level nav ────────────────────────────────────────────────────────────
 // Three views behind one chrome: the PR-review board, the autonomous-solver
 // status, and the PR-follow-ups inbox. Desktop gets a slim left rail; below the
-// narrow breakpoint they collapse to a bottom tab bar (mobile-native).
-type View = "reviews" | "solves" | "follow-ups"
-const VIEWS: readonly View[] = ["reviews", "solves", "follow-ups"]
-const VIEW_KEY = "prr.view"
-
-function useView() {
-  const [view, setView] = useState<View>(() => {
-    if (typeof window === "undefined") return "reviews"
-    const stored = window.localStorage.getItem(VIEW_KEY)
-    return (VIEWS as readonly string[]).includes(stored ?? "") ? (stored as View) : "reviews"
-  })
-  useEffect(() => {
-    if (typeof window !== "undefined") window.localStorage.setItem(VIEW_KEY, view)
-  }, [view])
-  return [view, setView] as const
-}
+// narrow breakpoint the app hands off to the purpose-built mobile console
+// (src/mobile/MobileApp), which owns its own bottom tab bar.
 
 function NavLogo() {
   return (
@@ -1067,42 +1054,6 @@ function RailBtn({
   )
 }
 
-function BottomTab({
-  active,
-  onClick,
-  icon: Icon,
-  label,
-  count = 0,
-}: {
-  active: boolean
-  onClick: () => void
-  icon: LucideIcon
-  label: string
-  count?: number
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={cn(
-        "flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-medium transition-colors",
-        active ? "text-accent" : "text-zinc-500",
-      )}
-    >
-      <span className="relative">
-        <Icon className="size-5" />
-        {count > 0 && (
-          <span className="absolute -right-2.5 -top-1.5 inline-flex min-w-[0.9rem] items-center justify-center rounded-full bg-[#e3b341] px-1 text-[9px] font-bold text-[#1a1304]">
-            {count}
-          </span>
-        )}
-      </span>
-      {label}
-    </button>
-  )
-}
-
 export default function App() {
   const prsData = useQuery(api.reviews.prs)
   const reposData = useQuery(api.repos.list)
@@ -1145,33 +1096,11 @@ export default function App() {
   const prs = prsData ?? []
   const repos = reposData ?? []
 
-  // Below the breakpoint the desktop two-pane can't breathe, so the app hands off
-  // to a purpose-built mobile view with a bottom tab bar. h-dvh (not 100vh) so
-  // the sheet and tab bar aren't clipped behind a retracting mobile toolbar.
+  // Below the breakpoint the desktop two-pane can't breathe, so the app hands
+  // off to the purpose-built mobile console (its own brand bar, tab bar, and
+  // full-screen detail pushes).
   if (isNarrow) {
-    return (
-      <div className="flex h-dvh flex-col overflow-hidden bg-canvas text-zinc-100">
-        <div className="relative flex min-h-0 flex-1 flex-col">
-          {view === "follow-ups" ? (
-            <FollowUpsMobile />
-          ) : view === "solves" ? (
-            <SolvesMobile />
-          ) : loading ? (
-            <div className="flex flex-1 items-center justify-center gap-2 text-sm text-zinc-500">
-              <Loader2 className="size-4 animate-spin" />
-              Loading reviews…
-            </div>
-          ) : (
-            <MobileView prs={prs} />
-          )}
-        </div>
-        <nav className="flex shrink-0 border-t border-line">
-          <BottomTab active={view === "reviews"} onClick={() => setView("reviews")} icon={GitPullRequest} label="Reviews" />
-          <BottomTab active={view === "solves"} onClick={() => setView("solves")} icon={Bot} label="Solves" count={solving} />
-          <BottomTab active={view === "follow-ups"} onClick={() => setView("follow-ups")} icon={Inbox} label="Follow-ups" count={pending} />
-        </nav>
-      </div>
-    )
+    return <MobileApp />
   }
 
   return (

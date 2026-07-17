@@ -1,18 +1,11 @@
-// Follow-ups kit: the Convex-row type, the label vocabulary, and the
-// presentational atoms for the PR-follow-ups inbox. The interactive surfaces
-// (rows, detail, actions) live in FollowUps.tsx; this is the shared vocabulary.
+// Follow-ups kit: the Convex-row type, the label vocabulary, the design-palette
+// metas, and the console-intent actions hook — shared by the desktop two-pane
+// (FollowUps.tsx) and the mobile console (src/mobile). The interactive surfaces
+// live in the views; this is the shared vocabulary.
+import { useMemo } from "react"
 import { type FunctionReturnType } from "convex/server"
-import {
-  AlertTriangle,
-  Bug,
-  Lightbulb,
-  type LucideIcon,
-  Sparkles,
-  Tag,
-  Wrench,
-} from "lucide-react"
+import { useMutation } from "convex/react"
 import { api } from "../../convex/_generated/api"
-import { cn } from "../lib/cn"
 
 // One inbox row = one suggested follow-up, with its source-PR context inline.
 export type Suggestion = FunctionReturnType<typeof api.suggestedIssues.inbox>[number]
@@ -21,120 +14,72 @@ export type SugCategory = Suggestion["category"]
 export type SugStatus = Suggestion["status"]
 export type SugSource = Suggestion["source"]
 
-export const CATEGORY: Record<SugCategory, { label: string; icon: LucideIcon; tone: string; dot: string }> = {
-  bug: { label: "Bug", icon: Bug, tone: "border-red-400/25 bg-red-400/10 text-red-200", dot: "bg-red-400" },
-  enhancement: {
-    label: "Enhancement",
-    icon: Lightbulb,
-    tone: "border-sky-400/25 bg-sky-400/10 text-sky-200",
-    dot: "bg-sky-400",
-  },
-  chore: {
-    label: "Chore",
-    icon: Wrench,
-    tone: "border-violet-400/25 bg-violet-400/10 text-violet-200",
-    dot: "bg-violet-400",
-  },
+// The kebab enum the agent emits → its display label.
+export const SOURCE_LABEL: Record<SugSource, string> = {
+  "deferred-p2": "Deferred P2",
+  "disclosed-limitation": "Disclosed limitation",
+  "build-tangent": "Build tangent",
 }
 
-// The kebab enum the agent emits → its display label + icon. A disclosed
-// limitation / deferred P2 is a warning glyph; a build tangent is a spark.
-export const SOURCE_META: Record<SugSource, { label: string; icon: LucideIcon }> = {
-  "deferred-p2": { label: "Deferred P2", icon: AlertTriangle },
-  "disclosed-limitation": { label: "Disclosed limitation", icon: AlertTriangle },
-  "build-tangent": { label: "Build tangent", icon: Sparkles },
+// The console's design palette: status as a coloured uppercase mono label/pill.
+// suggested → amber (awaiting you) · approved → green (worker filing it) ·
+// opened → sky · dismissed → zinc.
+export const FU_STATUS: Record<SugStatus, { label: string; text: string; bg: string; border: string }> = {
+  suggested: { label: "SUGGESTED", text: "text-[#fcd34d]", bg: "bg-[#e3b341]/10", border: "border-[#e3b341]/30" },
+  approved: { label: "APPROVED", text: "text-[#86efac]", bg: "bg-[#3fb950]/10", border: "border-[#3fb950]/30" },
+  opened: { label: "OPENED", text: "text-[#7dd3fc]", bg: "bg-[#38bdf8]/10", border: "border-[#38bdf8]/30" },
+  dismissed: { label: "DISMISSED", text: "text-zinc-400", bg: "bg-inset", border: "border-edge2" },
 }
 
-// The triage state-role labels (gate 2). `needs-triage` is where an opened
-// follow-up starts; promoting to `ready-for-agent` is what hands it to the solver.
-// Deliberately the human-settable subset of the full 6-label vocabulary in
-// worker/lib.mjs (STATE_LABELS); the solver-set labels aren't pickable here.
-export const LABELS: { id: TriageLabel; label: string; tone: string }[] = [
-  { id: "needs-triage", label: "needs-triage", tone: "border-amber-400/25 bg-amber-400/10 text-amber-200" },
-  { id: "ready-for-agent", label: "ready-for-agent", tone: "border-indigo-400/25 bg-indigo-400/10 text-indigo-200" },
-  { id: "ready-for-human", label: "ready-for-human", tone: "border-sky-400/25 bg-sky-400/10 text-sky-200" },
-  { id: "wontfix", label: "wontfix", tone: "border-zinc-700 bg-zinc-900/80 text-zinc-400" },
+export const FU_CAT_TEXT: Record<SugCategory, string> = {
+  bug: "text-[#fca5a5]",
+  enhancement: "text-[#7dd3fc]",
+  chore: "text-zinc-400",
+}
+
+export const FU_CAT_CHIP: Record<SugCategory, { text: string; bg: string; border: string }> = {
+  bug: { text: "text-[#fca5a5]", bg: "bg-[#f85149]/10", border: "border-[#f85149]/30" },
+  enhancement: { text: "text-[#7dd3fc]", bg: "bg-[#38bdf8]/10", border: "border-[#38bdf8]/30" },
+  chore: { text: "text-zinc-400", bg: "bg-rowsel", border: "border-edge2" },
+}
+
+// The triage state-role labels (gate 2) as mono toggle chips. `needs-triage` is
+// where an opened follow-up starts; promoting to `ready-for-agent` is what hands
+// it to the solver. Deliberately the human-settable subset of the full 6-label
+// vocabulary in worker/lib.mjs (STATE_LABELS); the solver-set labels aren't
+// pickable here.
+export const TRIAGE: { id: TriageLabel; text: string; border: string }[] = [
+  { id: "needs-triage", text: "text-[#fcd34d]", border: "border-[#e3b341]/40" },
+  { id: "ready-for-agent", text: "text-[#86efac]", border: "border-[#3fb950]/50" },
+  { id: "ready-for-human", text: "text-[#7dd3fc]", border: "border-[#38bdf8]/40" },
+  { id: "wontfix", text: "text-zinc-400", border: "border-edgehi" },
 ]
 
 export const issueUrl = (repo: string, n?: number) => `https://github.com/${repo}/issues/${n}`
 
-export function CategoryChip({ category }: { category: SugCategory }) {
-  const c = CATEGORY[category]
-  const Icon = c.icon
-  return (
-    <span className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium", c.tone)}>
-      <Icon className="size-3" />
-      {c.label}
-    </span>
+// The actor label stamped on a console decision (decidedBy). The console has no
+// per-user identity, so it's just "dashboard" — distinct from a CLI's $USER@$HOST.
+const ACTOR = "dashboard"
+
+// The console records *intent* (approve / dismiss / undo / set-label); the
+// worker does the GitHub side.
+export function useFollowUpActions() {
+  const approve = useMutation(api.suggestedIssues.approve)
+  const dismiss = useMutation(api.suggestedIssues.dismiss)
+  const undo = useMutation(api.suggestedIssues.undo)
+  const setLabel = useMutation(api.suggestedIssues.setLabel)
+  return useMemo(
+    () => ({
+      open: (s: Suggestion) => void approve({ id: s._id, by: ACTOR }),
+      dismiss: (s: Suggestion) => void dismiss({ id: s._id, by: ACTOR }),
+      undo: (s: Suggestion) => void undo({ id: s._id }),
+      setLabel: (s: Suggestion, label: TriageLabel) => void setLabel({ id: s._id, label }),
+    }),
+    [approve, dismiss, undo, setLabel],
   )
 }
 
-export function SourceTag({ source }: { source: SugSource }) {
-  const m = SOURCE_META[source]
-  const Icon = m.icon
-  return (
-    <span className="inline-flex items-center gap-1 rounded-md border border-zinc-700 bg-zinc-900/60 px-1.5 py-0.5 text-[11px] text-zinc-400">
-      <Icon className="size-3" />
-      {m.label}
-    </span>
-  )
-}
-
-// suggested → amber (awaiting you) · approved → sky (worker filing it) ·
-// opened → emerald · dismissed → zinc.
-export function StateDot({ status }: { status: SugStatus }) {
-  const tone =
-    status === "opened"
-      ? "bg-emerald-400"
-      : status === "dismissed"
-        ? "bg-zinc-600"
-        : status === "approved"
-          ? "bg-sky-400"
-          : "bg-amber-400"
-  return <span className={cn("size-2 shrink-0 rounded-full", tone)} />
-}
-
-export function LabelChip({ value }: { value: TriageLabel }) {
-  const l = LABELS.find((x) => x.id === value)
-  if (!l) return null
-  return <span className={cn("rounded border px-1 py-px font-mono text-[10px]", l.tone)}>{l.label}</span>
-}
-
-export function CountBadge({ n }: { n: number }) {
-  if (n <= 0) return null
-  return (
-    <span className="inline-flex min-w-[1rem] items-center justify-center rounded-full border border-amber-400/30 bg-amber-400/15 px-1 text-[10px] font-semibold text-amber-200">
-      {n}
-    </span>
-  )
-}
-
-export function LabelPicker({ value, onChange }: { value: TriageLabel; onChange: (l: TriageLabel) => void }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wide text-zinc-600">
-        <Tag className="size-3" />
-        Label
-      </span>
-      {LABELS.map((l) => {
-        const active = l.id === value
-        return (
-          <button
-            key={l.id}
-            type="button"
-            onClick={() => onChange(l.id)}
-            className={cn(
-              "rounded-md border px-1.5 py-0.5 font-mono text-[11px] transition",
-              active ? l.tone : "border-zinc-800 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300",
-            )}
-          >
-            {l.label}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
+export type FollowUpActions = ReturnType<typeof useFollowUpActions>
 
 // The portable, self-contained brief — kept byte-for-byte aligned with the issue
 // body the worker files (minus the title heading + dedup marker), so a fresh agent
