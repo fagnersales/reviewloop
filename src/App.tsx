@@ -36,10 +36,12 @@ import {
   ModelPill,
   PrStatusPill,
   PrStatusText,
+  RepoActivity,
   ReviewReport,
   buildEvents,
   findingsLine,
   githubCommitUrl,
+  mostUrgentStatus,
   prTiming,
   repoShort,
   roundCount,
@@ -889,13 +891,16 @@ function ReviewConsole({
   const trimmed = query.trim().toLowerCase()
 
   // Repo dropdown options: "All repositories" + each watched/seen repo, deduped
-  // case-insensitively (stored casing vs GitHub's canonical casing), with counts.
+  // case-insensitively (stored casing vs GitHub's canonical casing). Each wears
+  // an activity dot — the colour of its most attention-needing PR — instead of a
+  // raw count, so a cleaned-up repo (all merged/closed, or nothing) shows nothing.
   const repoOptions = useMemo<FilterOption<string>[]>(() => {
     const byKey = new Map<string, string>()
     for (const r of repos) byKey.set(r.toLowerCase(), r)
     for (const pr of allPrs) byKey.set(pr.repo.toLowerCase(), pr.repo)
     const names = Array.from(byKey.values()).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
-    const count = (repo: string) => allPrs.filter((p) => p.repo.toLowerCase() === repo.toLowerCase()).length
+    const activity = (repo: string) =>
+      mostUrgentStatus(allPrs.filter((p) => p.repo.toLowerCase() === repo.toLowerCase()).map((p) => p.statusKey))
 
     // Drop the owner prefix on your own repos so they read as bare names, but
     // keep "owner/" on everyone else's so the distinction stays visible. Nothing
@@ -913,9 +918,10 @@ function ReviewConsole({
     }
     const label = (repo: string) => (me && owner(repo) === me ? repo.split("/")[1] || repo : repo)
 
+    // "All repositories" is a filter, not a place to look — it carries no dot.
     return [
-      { value: "all", label: "All repositories", count: allPrs.length },
-      ...names.map((n) => ({ value: n, label: label(n), count: count(n) })),
+      { value: "all", label: "All repositories" },
+      ...names.map((n) => ({ value: n, label: label(n), trailing: <RepoActivity status={activity(n)} /> })),
     ]
   }, [repos, allPrs])
 

@@ -12,7 +12,11 @@ import { cn } from "../lib/cn"
 export type FilterOption<T extends string> = {
   value: T
   label: string
-  count: number
+  // Right-aligned count (the default trailing marker). Omit when supplying a
+  // `trailing` node instead — e.g. the repo picker's activity dot.
+  count?: number
+  // Right-aligned custom node; overrides `count` when set.
+  trailing?: ReactNode
 }
 
 export function FilterDropdown<T extends string>({
@@ -71,7 +75,7 @@ export function FilterDropdown<T extends string>({
                     setOpen(false)
                   }}
                   className={cn(
-                    "flex w-full items-center gap-[9px] rounded-[5px] px-[9px] py-[7px] text-left font-mono text-xs transition-colors",
+                    "group flex w-full items-center gap-[9px] rounded-[5px] px-[9px] py-[7px] text-left font-mono text-xs transition-colors",
                     active ? "bg-railsel text-zinc-100" : "text-zinc-400 hover:text-zinc-200",
                   )}
                 >
@@ -79,7 +83,7 @@ export function FilterDropdown<T extends string>({
                     {active && <Check className="size-3" strokeWidth={2.4} />}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{o.label}</span>
-                  <span className="text-[11px] text-zinc-600">{o.count}</span>
+                  {o.trailing ?? (o.count != null && <span className="text-[11px] text-zinc-600">{o.count}</span>)}
                 </button>
               )
             })}
