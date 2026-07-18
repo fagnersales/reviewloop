@@ -330,25 +330,30 @@ export function PrStatusPill({ pr }: { pr: Pr }) {
 }
 
 // The activity dot alone: a single dot in the colour of the repo's most-urgent
-// PR state (see mostUrgentStatus), pulsing for the live ones. A `null` status
-// renders an empty slot the same size, so rows stay aligned and a cleaned-up
+// PR state (see mostUrgentStatus), pulsing for the live ones. Colour is the only
+// visual cue at rest, so the dot carries its state name as an `aria-label` (with
+// role="img") to stay perceivable to screen readers without hovering. A `null`
+// status renders an empty slot the same size, so rows stay aligned and a cleaned-up
 // repo (all merged/closed) simply shows blank space where a dot would be.
 export function ActivityDot({ status }: { status: StatusKey | null }) {
   if (!status) return <span className="size-[7px] shrink-0" aria-hidden />
   const m = STATUS_META[status]
-  return <span className={cn("size-[7px] shrink-0 rounded-full", m.dot, m.pulse && "rl-pulse")} />
+  return <span role="img" aria-label={m.label} className={cn("size-[7px] shrink-0 rounded-full", m.dot, m.pulse && "rl-pulse")} />
 }
 
 // The repo-picker trailing marker: the dot, plus its status label which stays
 // clipped to zero width until the row is hovered, then softly wipes + fades in
 // to the dot's left. Needs the row to carry the `group` class (FilterDropdown's
-// option buttons do). A cleaned-up repo (`null`) is just the empty dot slot.
+// option buttons do). The label is a purely visual affordance — `aria-hidden`,
+// since the dot's `aria-label` already announces the state, so assistive tech
+// hears it once. A cleaned-up repo (`null`) is just the empty dot slot.
 export function RepoActivity({ status }: { status: StatusKey | null }) {
   if (!status) return <ActivityDot status={null} />
   const m = STATUS_META[status]
   return (
     <span className="flex items-center justify-end gap-2.5">
       <span
+        aria-hidden
         className={cn(
           "max-w-0 overflow-hidden whitespace-nowrap font-mono text-[9px] font-semibold tracking-[0.08em] opacity-0 transition-all duration-500 ease-out group-hover:max-w-[132px] group-hover:opacity-100",
           m.text,
