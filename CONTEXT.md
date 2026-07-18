@@ -47,3 +47,13 @@ one crystallizes).
 - **Claimable** — a queued row (review or solve task) no worker has claimed
   yet, surfaced by the `claimable` queries. The Convex claim mutation — not any
   GitHub state — is what prevents double-processing.
+
+- **House rule** — an operator-defined taste rule the reviewer enforces on
+  every PR of every watched repo (e.g. "no code comments"): a `reviewRules`
+  row with a level — `block` (violations post at P1, a merge blocker) or
+  `warn` (P2, a note). Edited from the console's rules popover, subscribed to
+  by the review worker, and injected into the review brief at spawn time
+  (`houseRulesSection` in `worker/index.mjs`) — so a change applies to the
+  next review, never one in flight. Levels ride the existing P0/P1/P2
+  machinery; nothing downstream (counts, `await` verdicts) parses rules
+  specially.

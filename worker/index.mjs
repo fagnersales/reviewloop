@@ -129,6 +129,11 @@ let watchedRepos = []
 // so a change applies to the next review, never one already running.
 let reviewerSettings = null
 
+// The console-owned house rules (the taste editor), kept live via rules.list.
+// Injected into the review brief at spawn time — same contract as the settings:
+// a change applies to the next review, never one already running.
+let houseRules = []
+
 log(`worker "${WORKER}" up; convex=${CONVEX_URL} concurrency=${cfg.concurrency}`)
 
 // A crash can leave a clone behind; clear strays before we start making more.
@@ -151,6 +156,39 @@ async function cloneRepo(repo, dir) {
   ])
   if (code === 0) return { ok: true }
   return { ok: false, error: errorReason(err, `gh repo clone exited ${code}`) }
+}
+
+// The operator's house rules as a brief section, or "" when none are defined.
+// Levels ride the skill's existing severity machinery — a [BLOCK] violation is a
+// P1 (a merge blocker, so `await` exits 2 and a fix agent picks it up), a [WARN]
+// violation is a P2 — so no downstream parsing changes.
+function houseRulesSection(rules) {
+  if (!rules.length) return ""
+  const lines = rules.map((r) => `- [${r.level.toUpperCase()}] ${r.text}`).join("\n")
+  return `
+
+---
+
+## House rules
+
+The operator of this review console defined house rules for this codebase. They
+are review policy, not suggestions: check every line the PR adds or modifies
+against each rule, and flag violations even where you'd personally disagree with
+the rule.
+
+${lines}
+
+- A violation of a **[BLOCK]** rule is an inline comment at **P1** — it is a
+  merge blocker. A violation of a **[WARN]** rule is an inline comment at
+  **P2**. Don't downgrade a violation because the rule seems minor; the operator
+  chose the level. Escalate only if the same code is also a real bug in its own
+  right.
+- Name the rule in the comment title so the author knows policy triggered it,
+  e.g. \`House rule "no code comments": explanatory comment added in parseFoo\`.
+  Use type Style unless the violation is also a Logic/Syntax problem.
+- Only flag code this PR adds or touches — pre-existing violations elsewhere in
+  the repo are out of scope.
+- Weigh [BLOCK] violations into the confidence score like any other P1.`
 }
 
 // The inline review brief: the skill body, plus the specifics of this PR so the
@@ -176,7 +214,7 @@ The local checkout is the default branch, **not** the PR branch, so read the PR'
 actual contents from \`origin\` with \`gh\`/\`git\` as the instructions describe. When a
 \`gh\` command needs the repo, it is \`${row.repo}\` (pass \`--repo ${row.repo}\`). Post
 exactly one \`COMMENT\` review to GitHub, then close your message with the review
-URL, the confidence score, the review-effort score, and the P0/P1/P2 counts.`
+URL, the confidence score, the review-effort score, and the P0/P1/P2 counts.${houseRulesSection(houseRules)}`
 }
 
 // Remove `reviewloop-review-*` clone dirs left in CLONE_BASE by a prior crash. Bounded
@@ -772,6 +810,18 @@ client.onUpdate(api.settings.get, {}, (s) => {
   const changed = next?.model !== reviewerSettings?.model || next?.effort !== reviewerSettings?.effort
   reviewerSettings = next
   if (changed && next) log(`reviewer settings: model=${next.model} effort=${next.effort}`)
+})
+
+// The console's house-rules editor. Applied per spawn (reviewPrompt), so like
+// the settings no re-pump is needed — in-flight reviews keep the brief they
+// started with.
+client.onUpdate(api.rules.list, {}, (rules) => {
+  const next = rules ?? []
+  const changed =
+    next.length !== houseRules.length ||
+    next.some((r, i) => r.text !== houseRules[i].text || r.level !== houseRules[i].level)
+  houseRules = next
+  if (changed) log(`house rules (${next.length}): ${next.map((r) => `[${r.level}] ${r.text}`).join(" · ") || "(none)"}`)
 })
 
 if (cfg.fallbackReconcileMin > 0) {

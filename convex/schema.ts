@@ -42,6 +42,15 @@ export const reviewerEffort = v.union(
   v.literal("max"),
 )
 
+// ── house rules (the console's taste editor) ────────────────────────────────
+// Operator-defined rules the reviewer enforces on every PR, on top of the
+// standard review brief (e.g. "no code comments", "no default exports"). The
+// level maps a violation onto the review's existing severity machinery:
+//   block : violations are posted at P1 — merge blockers, so `await` exits 2
+//           and a fix agent picks them up like any other blocker
+//   warn  : violations are posted at P2 — noted, never blocking
+export const ruleLevel = v.union(v.literal("block"), v.literal("warn"))
+
 // ── follow-up suggestions ────────────────────────────────────────────────────
 // A `suggestedIssues` row is a *proposal* a pr-feature agent emitted at the
 // unattended wrap-up of a PR it built — out-of-scope work it deferred, a
@@ -314,6 +323,16 @@ export default defineSchema({
   reviewerSettings: defineTable({
     model: reviewerModel,
     effort: reviewerEffort,
+    updatedAt: v.number(),
+  }),
+
+  // House rules the reviewer enforces (rules.ts) — owned by the console's rules
+  // editor, read live by the worker and injected into each review's brief at
+  // spawn time. Config-scale like watchedRepos: capped by `add` (MAX_RULES),
+  // read in insertion order, no index needed.
+  reviewRules: defineTable({
+    text: v.string(),
+    level: ruleLevel,
     updatedAt: v.number(),
   }),
 

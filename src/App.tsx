@@ -49,6 +49,7 @@ import {
 } from "./review/kit"
 import { FilterDropdown, type FilterOption } from "./ui/FilterDropdown"
 import { PhoneAccess } from "./ui/PhoneAccess"
+import { HouseRules } from "./ui/HouseRules"
 import { ReviewerSettings } from "./ui/ReviewerSettings"
 import { MobileApp } from "./mobile/MobileApp"
 import { useReadOnly } from "./read-only"
@@ -1116,6 +1117,7 @@ export default function App() {
         <RailBtn active={view === "solves"} onClick={() => setView("solves")} icon={Bot} label="Solves" count={solving} />
         <RailBtn active={view === "follow-ups"} onClick={() => setView("follow-ups")} icon={Inbox} label="Follow-ups" count={pending} />
         <div className="mt-auto" />
+        <HouseRules />
         <ReviewerSettings />
         <PhoneAccess />
       </nav>
