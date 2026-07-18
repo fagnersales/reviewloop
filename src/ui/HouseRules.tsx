@@ -8,10 +8,11 @@
 import { useEffect, useState } from "react"
 import { useMutation } from "convex/react"
 import { useQuery } from "convex-helpers/react/cache/hooks"
-import { Gavel, X } from "lucide-react"
+import { Gavel, Target, X } from "lucide-react"
 import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
 import { useReadOnly } from "../read-only"
+import { FilterDropdown, type FilterOption } from "./FilterDropdown"
 
 type Level = "block" | "warn"
 
@@ -61,6 +62,21 @@ export function HouseRules() {
   const sorted = rules
     ? [...rules].sort((a, b) => (a.repo?.toLowerCase() ?? "").localeCompare(b.repo?.toLowerCase() ?? ""))
     : undefined
+
+  // Scope picker options — the count column shows how many rules each scope
+  // already has. Options are labelled by short repo name (the owner prefix is
+  // pure noise in a control this narrow), except when two watched repos share a
+  // name and only the full slug disambiguates.
+  const shortName = (repo: string) => repo.split("/")[1] || repo
+  const shortNames = (repos ?? []).map(shortName)
+  const scopeOptions: FilterOption<string>[] = [
+    { value: ALL_REPOS, label: "all repos", count: rules?.filter((r) => !r.repo).length ?? 0 },
+    ...(repos ?? []).map((repo) => ({
+      value: repo,
+      label: shortNames.filter((s) => s === shortName(repo)).length > 1 ? repo : shortName(repo),
+      count: rules?.filter((r) => r.repo?.toLowerCase() === repo.toLowerCase()).length ?? 0,
+    })),
+  ]
 
   const submit = async () => {
     const text = draft.trim()
@@ -178,20 +194,17 @@ export function HouseRules() {
                 placeholder='Add a rule, e.g. "no code comments"'
                 className="w-full rounded-[5px] border border-edge bg-inset px-2 py-[6px] font-mono text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-edge2 focus:outline-none"
               />
-              <div className="mt-1.5 flex items-center gap-1">
-                <select
+              <div className="mt-1.5 flex items-center">
+                <FilterDropdown
+                  icon={<Target className="size-3.5" />}
+                  heading="Rule applies to"
+                  options={scopeOptions}
                   value={draftRepo}
-                  onChange={(e) => setDraftRepo(e.target.value)}
-                  title="Which repo the rule applies to"
-                  className="min-w-0 flex-1 rounded-[5px] border border-edge bg-inset px-1 py-[3px] font-mono text-[10px] text-zinc-400 focus:border-edge2 focus:outline-none"
-                >
-                  <option value={ALL_REPOS}>all repos</option>
-                  {(repos ?? []).map((repo) => (
-                    <option key={repo} value={repo}>
-                      {repo}
-                    </option>
-                  ))}
-                </select>
+                  onChange={setDraftRepo}
+                  openUp
+                />
+              </div>
+              <div className="mt-1.5 flex items-center gap-1">
                 {LEVELS.map((l) => (
                   <button
                     key={l.value}
@@ -199,7 +212,7 @@ export function HouseRules() {
                     onClick={() => setDraftLevel(l.value)}
                     title={l.hint}
                     className={cn(
-                      "shrink-0 rounded border px-1.5 py-[3px] font-mono text-[9px] uppercase tracking-[0.08em] transition-colors",
+                      "shrink-0 rounded-[5px] border px-1.5 py-[7px] font-mono text-[9px] uppercase tracking-[0.08em] leading-none transition-colors",
                       draftLevel === l.value
                         ? LEVEL_TONE[l.value]
                         : "border-edge bg-inset text-zinc-600 hover:text-zinc-400",
@@ -208,11 +221,12 @@ export function HouseRules() {
                     {l.value}
                   </button>
                 ))}
+                <span className="flex-1" />
                 <button
                   type="button"
                   disabled={!draft.trim()}
                   onClick={() => void submit()}
-                  className="shrink-0 rounded-[5px] border border-edge bg-inset px-2 py-[3px] font-mono text-[10px] text-zinc-400 transition-colors hover:border-edge2 hover:text-zinc-200 disabled:opacity-40"
+                  className="shrink-0 rounded-[5px] border border-edge bg-inset px-2 py-[6px] font-mono text-[10px] leading-none text-zinc-400 transition-colors hover:border-edge2 hover:text-zinc-200 disabled:opacity-40"
                 >
                   Add
                 </button>

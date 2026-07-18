@@ -1,8 +1,10 @@
-// The list-column filter control shared by all three views: the Reviews repo
-// picker, the Follow-ups status filter, and the Solves status filter. A mono
+// The dropdown control shared across the console: the Reviews repo picker, the
+// Follow-ups and Solves status filters, and the house-rules scope picker. A mono
 // trigger button that opens a menu of options (label + count) with a check on
 // the active one. An invisible full-screen layer behind the menu closes it on an
-// outside click — the same pattern the design uses.
+// outside click — the same pattern the design uses. `openUp` flips the menu
+// above the trigger for controls near the bottom of the screen (the rail
+// popovers).
 import { type ReactNode, useState } from "react"
 import { Check, ChevronDown } from "lucide-react"
 import { cn } from "../lib/cn"
@@ -19,12 +21,14 @@ export function FilterDropdown<T extends string>({
   options,
   value,
   onChange,
+  openUp = false,
 }: {
   icon: ReactNode
   heading: string
   options: FilterOption<T>[]
   value: T
   onChange: (value: T) => void
+  openUp?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const current = options.find((o) => o.value === value) ?? options[0]
@@ -47,7 +51,12 @@ export function FilterDropdown<T extends string>({
       {open && (
         <>
           <div onClick={() => setOpen(false)} className="fixed inset-0 z-40" />
-          <div className="absolute inset-x-0 top-[calc(100%+6px)] z-50 flex flex-col gap-0.5 rounded-[7px] border border-edge2 bg-elevated p-[5px] shadow-[0_14px_36px_rgba(0,0,0,0.6)]">
+          <div
+            className={cn(
+              "absolute inset-x-0 z-50 flex flex-col gap-0.5 rounded-[7px] border border-edge2 bg-elevated p-[5px] shadow-[0_14px_36px_rgba(0,0,0,0.6)]",
+              openUp ? "bottom-[calc(100%+6px)]" : "top-[calc(100%+6px)]",
+            )}
+          >
             <div className="px-[9px] pb-1.5 pt-1 font-mono text-[9px] uppercase tracking-[0.16em] text-zinc-600">
               {heading}
             </div>
