@@ -896,9 +896,26 @@ function ReviewConsole({
     for (const pr of allPrs) byKey.set(pr.repo.toLowerCase(), pr.repo)
     const names = Array.from(byKey.values()).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
     const count = (repo: string) => allPrs.filter((p) => p.repo.toLowerCase() === repo.toLowerCase()).length
+
+    // Drop the owner prefix on your own repos so they read as bare names, but
+    // keep "owner/" on everyone else's so the distinction stays visible. Nothing
+    // records who "you" are, so infer it: the owner of the most watched repos.
+    // A tie is genuinely ambiguous, so nobody is treated as "you" (labels stay
+    // full). GitHub repo names are unique per owner, so bare names never collide.
+    const owner = (repo: string) => repo.split("/")[0].toLowerCase()
+    const byOwner = new Map<string, number>()
+    for (const n of names) byOwner.set(owner(n), (byOwner.get(owner(n)) ?? 0) + 1)
+    let me: string | undefined
+    let top = 0
+    for (const [o, c] of byOwner) {
+      if (c > top) [me, top] = [o, c]
+      else if (c === top) me = undefined
+    }
+    const label = (repo: string) => (me && owner(repo) === me ? repo.split("/")[1] || repo : repo)
+
     return [
       { value: "all", label: "All repositories", count: allPrs.length },
-      ...names.map((n) => ({ value: n, label: n, count: count(n) })),
+      ...names.map((n) => ({ value: n, label: label(n), count: count(n) })),
     ]
   }, [repos, allPrs])
 
