@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reviewloop — code review that never sleeps</title>
+<meta name="description" content="The open-source, self-hosted PR reviewer that runs on your Claude Code subscription. Every PR cloned, read, scored, and posted — no per-seat pricing, no code leaving your control.">
+<meta property="og:title" content="reviewloop — code review that never sleeps">
+<meta property="og:description" content="The OSS Greptile alternative that runs on your Claude Code subscription. Self-hosted, MIT-licensed, one prompt to install.">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%230a0a0b'/%3E%3Cg fill='none' stroke='%233fb950' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='6' cy='6' r='3'/%3E%3Ccircle cx='6' cy='18' r='3'/%3E%3Cpath d='M6 9v6'/%3E%3Cpath d='M13 6h3a2 2 0 0 1 2 2v7'/%3E%3Cpath d='m15 9-2-3 2-3'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; }
+  body { background:#0a0a0b; color:#d4d4d8; font-family:'Geist',ui-sans-serif,system-ui,sans-serif; -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+  :root { --accent:#3fb950; --accent-strong:#2ea043; --accent-soft:rgba(63,185,80,0.13); }
+  ::selection { background: var(--accent-soft); color:#f4f4f5; }
+  a { color:#d4d4d8; }
+  a:hover { color:#f4f4f5; }
+  @keyframes prr-pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }
+  @keyframes prr-blink { 0%,49% { opacity:1; } 50%,100% { opacity:0; } }
+  @keyframes prr-shimmer { 0% { background-position:200% 0; } 100% { background-position:-200% 0; } }
+</style>
+</head>
+<body>
+
+<div style="position:relative;min-height:100vh;background:#0a0a0b;overflow:hidden">
+
+  <!-- ambient grid -->
+  <div style="position:absolute;inset:0;pointer-events:none;background-image:linear-gradient(#16161a 1px,transparent 1px),linear-gradient(90deg,#16161a 1px,transparent 1px);background-size:46px 46px;mask-image:radial-gradient(ellipse 80% 55% at 50% 0%,#000 30%,transparent 80%);-webkit-mask-image:radial-gradient(ellipse 80% 55% at 50% 0%,#000 30%,transparent 80%)"></div>
+
+  <div style="position:relative;max-width:1180px;margin:0 auto;padding:0 clamp(20px,4vw,40px)">
+
+    <!-- NAV -->
+    <nav style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px 20px;padding:22px 0">
+      <div style="display:flex;align-items:center;gap:11px">
+        <div style="width:34px;height:34px;border:1px solid #2a2a30;border-radius:7px;background:linear-gradient(#141417,#0d0d0f);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 1px #0a0a0b,0 6px 20px rgba(0,0,0,.5)">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M6 9v6"></path><path d="M13 6h3a2 2 0 0 1 2 2v7"></path><path d="m15 9-2-3 2-3"></path></svg>
+        </div>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:15px;font-weight:600;color:#f4f4f5;letter-spacing:-.01em">reviewloop</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px 26px">
+        <a href="#how" style="font-size:13px;color:#a1a1aa;text-decoration:none">How it works</a>
+        <a href="#features" style="font-size:13px;color:#a1a1aa;text-decoration:none">Features</a>
+        <a href="#compare" style="font-size:13px;color:#a1a1aa;text-decoration:none">vs. Greptile</a>
+        <a href="https://github.com/fagnersales/reviewloop" style="display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:500;color:#e4e4e7;background:#1b1b1f;border:1px solid #2f2f36;border-radius:4px;padding:7px 13px;text-decoration:none">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.69 1.25 3.34.96.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.16 1.18a11 11 0 0 1 5.76 0c2.19-1.49 3.16-1.18 3.16-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.83 1.18 3.09 0 4.41-2.7 5.38-5.26 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.2.66.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"></path></svg>
+          GitHub
+        </a>
+      </div>
+    </nav>
+
+    <!-- HERO -->
+    <header style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:clamp(32px,5vw,56px);align-items:center;padding:clamp(40px,7vw,76px) 0 clamp(48px,8vw,90px)">
+      <div>
+        <div style="display:inline-flex;align-items:center;gap:8px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--accent);padding:5px 11px;border:1px solid var(--accent-soft);border-radius:4px;background:var(--accent-soft)">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--accent);animation:prr-pulse 1.5s ease-in-out infinite"></span>
+          open source · MIT
+        </div>
+        <h1 style="margin:24px 0 0;font-family:'JetBrains Mono',monospace;font-size:clamp(28px,3.8vw,44px);font-weight:600;letter-spacing:-.02em;color:#f4f4f5;line-height:1.12;text-wrap:balance">
+          Code review that never sleeps<span style="display:inline-block;width:.45em;height:.85em;margin-left:8px;background:var(--accent);vertical-align:-.1em;animation:prr-blink 1.1s steps(1) infinite"></span>
+        </h1>
+        <p style="margin:22px 0 0;max-width:52ch;font-size:clamp(15px,1.6vw,17px);line-height:1.65;color:#a1a1aa;text-wrap:pretty">
+          The OSS Greptile alternative that runs on your Claude Code subscription. Every PR gets a full-context review — cloned, read, scored, posted — with no per-seat pricing and no code leaving your control.
+        </p>
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:30px">
+          <a href="#install" style="display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:#08160c;background:var(--accent);border:1px solid var(--accent-strong);border-radius:4px;padding:10px 18px;text-decoration:none">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+            Get started
+          </a>
+          <a href="#how" style="font-size:14px;font-weight:500;color:#e4e4e7;background:#1b1b1f;border:1px solid #2f2f36;border-radius:4px;padding:10px 18px;text-decoration:none">See how it works</a>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:28px">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#a1a1aa;padding:5px 10px;border:1px solid #232328;border-radius:4px;background:#111114">$0 / seat</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#a1a1aa;padding:5px 10px;border:1px solid #232328;border-radius:4px;background:#111114">self-hosted</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#a1a1aa;padding:5px 10px;border:1px solid #232328;border-radius:4px;background:#111114">powered by Claude Code</span>
+        </div>
+      </div>
+
+      <!-- live console card -->
+      <div style="background:#111114;border:1px solid #202024;border-radius:8px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5)">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #18181b;background:#0c0c0e">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#6e6e78">acme/payments-api <span style="color:var(--accent)">#128</span></span>
+          <span style="display:inline-flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:10px;color:#7dd3fc"><span style="width:5px;height:5px;border-radius:50%;background:#38bdf8;animation:prr-pulse 1.4s ease-in-out infinite"></span>REVIEWING · <span id="elapsed">04:31</span></span>
+        </div>
+        <div style="padding:14px 16px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.9;background:#08080a">
+          <div style="display:flex;gap:10px"><span style="color:#3f3f46">10:42:01</span><span style="width:5px;height:5px;border-radius:50%;background:#3fb950;margin-top:7px;flex-shrink:0"></span><span style="color:#6b6b74">Cloned repo into throwaway dir</span></div>
+          <div style="display:flex;gap:10px"><span style="color:#3f3f46">10:42:48</span><span style="width:5px;height:5px;border-radius:50%;background:#71717a;margin-top:7px;flex-shrink:0"></span><span style="color:#9ca3af">Reading diff across 14 files</span></div>
+          <div style="display:flex;gap:10px"><span style="color:#3f3f46">10:43:37</span><span style="width:5px;height:5px;border-radius:50%;background:#71717a;margin-top:7px;flex-shrink:0"></span><span style="color:#9ca3af">Tracing callers of finish() across repo</span></div>
+          <div style="display:flex;gap:10px"><span style="color:#3f3f46">10:44:12</span><span style="width:5px;height:5px;border-radius:50%;background:#d2a824;margin-top:7px;flex-shrink:0"></span><span style="color:#d4d4d8">Flagged unhandled rejection in finish()</span></div>
+          <div style="display:flex;gap:10px"><span style="color:#3f3f46">10:46:30</span><span style="width:5px;height:5px;border-radius:50%;background:#38bdf8;margin-top:7px;flex-shrink:0;animation:prr-pulse 1.2s ease-in-out infinite"></span><span style="background-image:linear-gradient(90deg,#52525b 0%,#52525b 35%,#f4f4f5 50%,#52525b 65%,#52525b 100%);background-size:200% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:prr-shimmer 2.2s linear infinite">Drafting review summary…</span></div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-top:1px solid #18181b">
+          <div style="display:flex;align-items:center;gap:12px;font-family:'JetBrains Mono',monospace;font-size:11px">
+            <span style="display:inline-flex;align-items:center;gap:5px;color:#52525b"><span style="width:7px;height:7px;border-radius:2px;background:#2a2a30"></span>P0 0</span>
+            <span style="display:inline-flex;align-items:center;gap:5px;color:#f0883e"><span style="width:7px;height:7px;border-radius:2px;background:#f0883e"></span>P1 1</span>
+            <span style="display:inline-flex;align-items:center;gap:5px;color:#d2a824"><span style="width:7px;height:7px;border-radius:2px;background:#d2a824"></span>P2 2</span>
+          </div>
+          <span style="display:inline-flex;align-items:center;gap:5px;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:#86efac;background:rgba(63,185,80,0.1);border:1px solid rgba(63,185,80,0.32);border-radius:4px;padding:4px 8px"><svg width="10" height="10" viewBox="0 0 24 24" fill="#3fb950" stroke="none"><path d="m12 2 2.9 6.3 6.9.6-5.2 4.6 1.6 6.8L12 17.3 5.8 20.9l1.6-6.8L2.2 9.5l6.9-.6z"></path></svg>4.5</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- HOW IT WORKS -->
+    <section id="how" style="padding:64px 0;border-top:1px solid #161619">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <span style="color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600">›</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:#6e6e78">01 / How it works</span>
+        <span style="flex:1;height:1px;background:#18181b"></span>
+      </div>
+      <h2 style="margin:0 0 6px;font-size:26px;font-weight:600;color:#f4f4f5;letter-spacing:-.01em">Open a PR. The loop does the rest.</h2>
+      <p style="margin:0 0 36px;max-width:60ch;font-size:14px;line-height:1.6;color:#8b8b93">Reviewloop watches your repos over webhooks and runs the full review loop — until the PR is verified or merged.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:14px">
+        <div style="background:#111114;border:1px solid #202024;border-radius:6px;padding:22px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid #2a2a30;border-radius:5px;color:#a1a1aa"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M6 9v6"></path><path d="M13 6h3a2 2 0 0 1 2 2v7"></path><path d="m15 9-2-3 2-3"></path></svg></span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#52525b">01</span>
+          </div>
+          <div style="font-size:14px;font-weight:600;color:#f4f4f5">PR opens</div>
+          <div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:6px">A webhook queues the review. New pushes dedup by head SHA — no double runs.</div>
+        </div>
+        <div style="background:#111114;border:1px solid #202024;border-radius:6px;padding:22px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid rgba(56,189,248,0.3);border-radius:5px;color:#7dd3fc"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16" y2="16"></line></svg></span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#52525b">02</span>
+          </div>
+          <div style="font-size:14px;font-weight:600;color:#f4f4f5">Claude reviews</div>
+          <div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:6px">Claude Code clones the repo and reads the diff with full codebase context — not just the patch.</div>
+        </div>
+        <div style="background:#111114;border:1px solid #202024;border-radius:6px;padding:22px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid rgba(227,179,65,0.3);border-radius:5px;color:#fcd34d"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.6 1.8 18a1.5 1.5 0 0 0 1.3 2.3h17.8A1.5 1.5 0 0 0 22.2 18L13.7 3.6a1.5 1.5 0 0 0-2.6 0Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12" y2="17"></line></svg></span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#52525b">03</span>
+          </div>
+          <div style="font-size:14px;font-weight:600;color:#f4f4f5">Findings posted</div>
+          <div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:6px">Issues land on the PR ranked P0–P2, with a 1–5 confidence score on the whole change.</div>
+        </div>
+        <div style="background:#111114;border:1px solid #202024;border-radius:6px;padding:22px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid rgba(63,185,80,0.32);border-radius:5px;color:#86efac"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="9 12 11.5 14.5 16 9.5"></polyline></svg></span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#52525b">04</span>
+          </div>
+          <div style="font-size:14px;font-weight:600;color:#f4f4f5">Loop until verified</div>
+          <div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:6px">Your agents pick up findings, push fixes, and reviewloop re-reviews — until it's clean.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section id="features" style="padding:64px 0;border-top:1px solid #161619">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <span style="color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600">›</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:#6e6e78">02 / Features</span>
+        <span style="flex:1;height:1px;background:#18181b"></span>
+      </div>
+      <h2 style="margin:0 0 36px;font-size:26px;font-weight:600;color:#f4f4f5;letter-spacing:-.01em">A review console, not a chat window</h2>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));gap:14px">
+        <div style="display:flex;align-items:flex-start;gap:14px;background:#0d0d0f;border:1px solid #1d1d21;border-radius:6px;padding:20px">
+          <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;border:1px solid rgba(63,185,80,0.32);border-radius:5px;color:#86efac"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v6c0 5 4 8 9 9 5-1 9-4 9-9V7Z"></path></svg></span>
+          <div><div style="font-size:14px;font-weight:600;color:#f4f4f5">Your subscription, your keys</div><div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:5px">Runs on the Claude Code plan you already pay for. No API metering, no per-seat pricing, no vendor holding your code.</div></div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:14px;background:#0d0d0f;border:1px solid #1d1d21;border-radius:6px;padding:20px">
+          <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;border:1px solid rgba(56,189,248,0.3);border-radius:5px;color:#7dd3fc"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><line x1="3" y1="12" x2="9" y2="12"></line><line x1="15" y1="12" x2="21" y2="12"></line></svg></span>
+          <div><div style="font-size:14px;font-weight:600;color:#f4f4f5">Full-repo context</div><div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:5px">Each review clones the repo and traces callers, types, and tests — it catches what diff-only reviewers can't see.</div></div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:14px;background:#0d0d0f;border:1px solid #1d1d21;border-radius:6px;padding:20px">
+          <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;border:1px solid rgba(129,140,248,0.3);border-radius:5px;color:#a5b4fc"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0v5"></path><path d="M14 10V4a2 2 0 0 0-4 0v7"></path><path d="M10 10.5V6a2 2 0 0 0-4 0v8"></path><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2a8 8 0 0 1-7-4l-2.8-4.6a2 2 0 0 1 3.4-2L7 17"></path></svg></span>
+          <div><div style="font-size:14px;font-weight:600;color:#f4f4f5">Agent hand-off</div><div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:5px">Findings are structured for coding agents. A local Claude Code session can ack a review, fix, and push — hands-free.</div></div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:14px;background:#0d0d0f;border:1px solid #1d1d21;border-radius:6px;padding:20px">
+          <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;border:1px solid rgba(227,179,65,0.3);border-radius:5px;color:#fcd34d"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15.5 14"></polyline></svg></span>
+          <div><div style="font-size:14px;font-weight:600;color:#f4f4f5">Live streaming console</div><div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:5px">Watch every review as it runs — log lines, elapsed time, status transitions — across all your repos in one place.</div></div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:14px;background:#0d0d0f;border:1px solid #1d1d21;border-radius:6px;padding:20px">
+          <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;border:1px solid rgba(248,81,73,0.3);border-radius:5px;color:#fca5a5"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.6 1.8 18a1.5 1.5 0 0 0 1.3 2.3h17.8A1.5 1.5 0 0 0 22.2 18L13.7 3.6a1.5 1.5 0 0 0-2.6 0Z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12" y2="17"></line></svg></span>
+          <div><div style="font-size:14px;font-weight:600;color:#f4f4f5">Severity that means something</div><div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:5px">P0 blocks, P1 warns, P2 is a nit. Counts stay dim until non-zero — a quiet console is a healthy one.</div></div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:14px;background:#0d0d0f;border:1px solid #1d1d21;border-radius:6px;padding:20px">
+          <span style="display:flex;align-items:center;justify-content:center;width:32px;height:32px;flex-shrink:0;border:1px solid rgba(163,113,247,0.3);border-radius:5px;color:#d8b4fe"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><path d="M6 21V9a9 9 0 0 0 9 9"></path></svg></span>
+          <div><div style="font-size:14px;font-weight:600;color:#f4f4f5">Knows when to stop</div><div style="font-size:12.5px;line-height:1.6;color:#8b8b93;margin-top:5px">Merged or closed PRs drop out of the loop automatically. Failed runs retry with a budget, then surface loudly.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- COMPARE -->
+    <section id="compare" style="padding:64px 0;border-top:1px solid #161619">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <span style="color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600">›</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:#6e6e78">03 / Why not a SaaS reviewer</span>
+        <span style="flex:1;height:1px;background:#18181b"></span>
+      </div>
+      <h2 style="margin:0 0 6px;font-size:26px;font-weight:600;color:#f4f4f5;letter-spacing:-.01em">Same loop. None of the invoice.</h2>
+      <p style="margin:0 0 36px;max-width:60ch;font-size:14px;line-height:1.6;color:#8b8b93">Hosted AI reviewers charge per seat and read your code on their servers. Reviewloop runs where you run.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:14px">
+        <div style="background:#0d0d0f;border:1px solid #1d1d21;border-radius:6px;padding:26px">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:#5b5b63;margin-bottom:18px">Hosted reviewers</div>
+          <div style="display:flex;flex-direction:column;gap:13px">
+            <div style="display:flex;align-items:flex-start;gap:10px"><svg style="flex-shrink:0;margin-top:2px" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f85149" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg><span style="font-size:13.5px;line-height:1.55;color:#a1a1aa">Per-seat pricing that scales with your team, not your usage</span></div>
+            <div style="display:flex;align-items:flex-start;gap:10px"><svg style="flex-shrink:0;margin-top:2px" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f85149" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg><span style="font-size:13.5px;line-height:1.55;color:#a1a1aa">Your source indexed and stored on someone else's infrastructure</span></div>
+            <div style="display:flex;align-items:flex-start;gap:10px"><svg style="flex-shrink:0;margin-top:2px" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f85149" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg><span style="font-size:13.5px;line-height:1.55;color:#a1a1aa">Closed pipeline — the prompt, the model, the loop are all opaque</span></div>
+            <div style="display:flex;align-items:flex-start;gap:10px"><svg style="flex-shrink:0;margin-top:2px" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#f85149" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg><span style="font-size:13.5px;line-height:1.55;color:#a1a1aa">Comments stop at the review — fixing is still your problem</span></div>
+          </div>
+        </div>
+        <div style="background:#111114;border:1px solid rgba(63,185,80,0.32);border-radius:6px;padding:26px;box-shadow:0 0 40px rgba(63,185,80,0.06)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:18px">
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent)">reviewloop</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#52525b">MIT · self-hosted</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:13px">
+            <div style="display:flex;align-items:flex-start;gap:10px"><svg style="flex-shrink:0;margin-top:2px" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span style="font-size:13.5px;line-height:1.55;color:#d4d4d8">Flat cost: the Claude Code subscription you already have</span></div>
+            <div style="display:flex;align-items:flex-start;gap:10px"><svg style="flex-shrink:0;margin-top:2px" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span style="font-size:13.5px;line-height:1.55;color:#d4d4d8">Code is cloned to a throwaway dir on your machine, then deleted</span></div>
+            <div style="display:flex;align-items:flex-start;gap:10px"><svg style="flex-shrink:0;margin-top:2px" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span style="font-size:13.5px;line-height:1.55;color:#d4d4d8">Every prompt and heuristic in the open — fork it, tune it, own it</span></div>
+            <div style="display:flex;align-items:flex-start;gap:10px"><svg style="flex-shrink:0;margin-top:2px" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg><span style="font-size:13.5px;line-height:1.55;color:#d4d4d8">Closes the loop: findings → agent fix → re-review → verified</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INSTALL -->
+    <section id="install" style="padding:64px 0 100px;border-top:1px solid #161619">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+        <span style="color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:600">›</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:#6e6e78">04 / Install</span>
+        <span style="flex:1;height:1px;background:#18181b"></span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,400px),1fr));gap:clamp(24px,4vw,40px);align-items:center">
+        <div>
+          <h2 style="margin:0 0 12px;font-size:26px;font-weight:600;color:#f4f4f5;letter-spacing:-.01em">One prompt. Your agent does the rest.</h2>
+          <p style="margin:0;font-size:14px;line-height:1.65;color:#8b8b93">Paste the install prompt into Claude Code or Codex — it clones the repo, creates your own free Convex backend, starts the worker and console, and watches your first repo. If <span style="font-family:'JetBrains Mono',monospace;color:#d4d4d8">claude</span> works in your terminal, reviewloop works too.</p>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:24px">
+            <a href="https://github.com/fagnersales/reviewloop" style="display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:500;color:#08160c;background:var(--accent);border:1px solid var(--accent-strong);border-radius:4px;padding:10px 18px;text-decoration:none">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.55v-1.94c-3.2.7-3.87-1.54-3.87-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.76 2.69 1.25 3.34.96.1-.74.4-1.25.72-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .97-.31 3.16 1.18a11 11 0 0 1 5.76 0c2.19-1.49 3.16-1.18 3.16-1.18.62 1.59.23 2.76.11 3.05.74.81 1.18 1.83 1.18 3.09 0 4.41-2.7 5.38-5.26 5.67.41.35.77 1.05.77 2.12v3.15c0 .3.2.66.8.55A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"></path></svg>
+              Star on GitHub
+            </a>
+            <a href="https://github.com/fagnersales/reviewloop#readme" style="font-size:14px;font-weight:500;color:#e4e4e7;background:#1b1b1f;border:1px solid #2f2f36;border-radius:4px;padding:10px 18px;text-decoration:none">Read the docs</a>
+          </div>
+        </div>
+        <div style="background:#08080a;border:1px solid #1a1a1e;border-radius:8px;padding:20px 22px;font-family:'JetBrains Mono',monospace;font-size:clamp(11px,1.3vw,13px);line-height:2.1;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow-wrap:break-word;min-width:0">
+          <div><span style="color:#52525b">$</span> <span style="color:#d4d4d8">claude</span> <span style="color:#52525b"># or codex</span></div>
+          <div style="line-height:1.8;margin:6px 0"><span style="color:#52525b">&gt;</span> <span id="install-prompt" style="color:#86efac">Fetch https://raw.githubusercontent.com/fagnersales/reviewloop/master/INSTALL.md and follow it to install reviewloop for me.</span> <button id="copy-prompt" title="Copy the install prompt" style="font-family:inherit;font-size:10px;color:#a1a1aa;background:#1b1b1f;border:1px solid #2f2f36;border-radius:4px;padding:3px 8px;cursor:pointer;vertical-align:1px">copy</button></div>
+          <div style="color:#6b6b74"><span style="color:#3fb950">✓</span> watching 1 repo · reviews run on your Claude Code plan<span style="display:inline-block;width:8px;height:15px;margin-left:6px;background:var(--accent);vertical-align:-2px;animation:prr-blink 1.1s steps(1) infinite"></span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:14px 20px;padding:26px 0 40px;border-top:1px solid #161619">
+      <div style="display:flex;align-items:center;gap:9px">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M6 9v6"></path><path d="M13 6h3a2 2 0 0 1 2 2v7"></path><path d="m15 9-2-3 2-3"></path></svg>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#6e6e78">reviewloop · MIT license</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:22px;font-size:12px">
+        <a href="https://github.com/fagnersales/reviewloop" style="color:#71717a;text-decoration:none">GitHub</a>
+        <a href="https://github.com/fagnersales/reviewloop#readme" style="color:#71717a;text-decoration:none">Docs</a>
+        <a href="https://github.com/fagnersales/reviewloop/commits/master" style="color:#71717a;text-decoration:none">Changelog</a>
+      </div>
+    </footer>
+
+  </div>
+</div>
+
+<script>
+(function () {
+  var el = document.getElementById('elapsed')
+  var sec = 271
+  setInterval(function () {
+    sec += 1
+    var m = String(Math.floor(sec / 60)).padStart(2, '0')
+    var s = String(sec % 60).padStart(2, '0')
+    el.textContent = m + ':' + s
+  }, 1000)
+
+  var btn = document.getElementById('copy-prompt')
+  btn.addEventListener('click', function () {
+    navigator.clipboard.writeText(document.getElementById('install-prompt').textContent).then(function () {
+      btn.textContent = 'copied'
+      setTimeout(function () { btn.textContent = 'copy' }, 1600)
+    })
+  })
+})()
+</script>
+</body>
+</html>
