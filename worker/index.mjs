@@ -101,6 +101,13 @@ const client = new ConvexClient(CONVEX_URL)
 // Reviews this worker is currently running or claiming, by row id.
 const inflight = new Set()
 const claiming = new Set()
+
+// Clone dirs of in-flight reviews, and the signal that kills their `claude`
+// children on shutdown. `process.exit` in shutdown() skips runReview's
+// `finally`, so those dirs must be removed there — otherwise every graceful
+// stop with a review in flight leaks a clone until the next startup sweep.
+const activeClones = new Set()
+const shutdownController = new AbortController()
 let latestClaimable = []
 
 // Suggested-issue rows the worker is mid-side-effect on (creating the GitHub
@@ -235,6 +242,7 @@ async function claimAndRun(row) {
 async function runReview(row) {
   const short = row.headSha.slice(0, 7)
   const cloneDir = mkdtempSync(join(CLONE_BASE, CLONE_PREFIX))
+  activeClones.add(cloneDir)
   try {
     log(`⬇ cloning ${row.repo} for #${row.prNumber} @${short} -> ${cloneDir}`)
     const cloned = await cloneRepo(row.repo, cloneDir)
@@ -245,6 +253,7 @@ async function runReview(row) {
     }
     await reviewClone(row, short, cloneDir)
   } finally {
+    activeClones.delete(cloneDir)
     try {
       rmSync(cloneDir, { recursive: true, force: true })
     } catch {
@@ -277,6 +286,7 @@ async function reviewClone(row, short, cloneDir) {
     cwd: cloneDir,
     logFile,
     timeoutMs: cfg.reviewTimeoutMin * 60 * 1000,
+    signal: shutdownController.signal,
     onTimeout: () => log(`⏱ timeout #${row.prNumber} after ${cfg.reviewTimeoutMin}m — killing`),
     onProgress: (line) =>
       client.mutation(api.reviews.updateProgress, { id: row._id, line }).catch(() => {}),
@@ -750,6 +760,17 @@ if (cfg.fallbackReconcileMin > 0) {
 
 async function shutdown() {
   log("shutting down")
+  // Kill in-flight `claude` children (via the spawn signal) and remove their
+  // clone dirs — their rows stay `reviewing` and the stale-review cron requeues
+  // them, but the dirs would otherwise leak past this process's lifetime.
+  shutdownController.abort()
+  for (const dir of activeClones) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {
+      /* best effort */
+    }
+  }
   await client.close().catch(() => {})
   process.exit(0)
 }

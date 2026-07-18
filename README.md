@@ -131,8 +131,11 @@ npm run worker
 # background (survives the terminal, not a reboot)
 nohup node worker/index.mjs >> worker/worker.out 2>&1 < /dev/null & echo $! > worker/worker.pid
 
-kill "$(cat worker/worker.pid)"   # stop the background one
-tail -f worker/worker.out          # worker log; per-PR run logs in worker/logs/
+# stop the background one (the ps guard skips a stale pid file left by a
+# crash/reboot, which could otherwise point at an unrelated recycled pid)
+pid=$(cat worker/worker.pid) && ps -p "$pid" -o command= | grep -q worker/index.mjs && kill "$pid"
+
+tail -f worker/worker.out          # worker log (UTC timestamps); per-PR run logs in worker/logs/
 ```
 
 For auto-start on login/reboot, wrap it in a launchd/systemd agent (not set
@@ -266,7 +269,9 @@ spawn sets `REVIEWLOOP_UNATTENDED=1`, the contract that tells `pr-feature` it's 
 
 ## Verify end-to-end
 
-- `GET $SITE_URL/health` → `{ "ok": true }`.
+- `GET $SITE_URL/health` → `{ "ok": true }`. This proves the **Convex backend**
+  only — the local worker is a separate process. Worker liveness = its pid is
+  alive and `worker/worker.out` shows the `worker "…" up; convex=…` line.
 - Push a commit to an open PR (or open a throwaway one). Within seconds the board
   goes **Queued → Verifying (timer) → Verified** with a link to the posted review.
 - `gh api repos/<owner/name>/hooks/<id>/deliveries` → `200`s.

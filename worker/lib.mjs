@@ -91,7 +91,9 @@ export function errorReason(err, fallback) {
 
 // ── misc shared helpers ──────────────────────────────────────────────────────
 
-export const ts = () => new Date().toISOString().slice(11, 19)
+// The trailing Z marks these as UTC, so log lines correlate with GitHub/Convex
+// timestamps without guessing the machine's offset.
+export const ts = () => new Date().toISOString().slice(11, 19) + "Z"
 export const log = (...a) => console.log(`[${ts()}]`, ...a)
 
 // drop undefined keys so optional Convex validators are happy
@@ -172,8 +174,12 @@ export function streamClaude({
   timeoutMs,
   onTimeout,
   onProgress,
+  signal,
 }) {
-  const child = spawn(claudeBin, args, { cwd, env: env ?? process.env })
+  // `signal` (optional AbortSignal) SIGTERMs the child when aborted — the
+  // worker's shutdown path uses it so an orphaned `claude -p` doesn't keep
+  // reviewing (and posting) after the worker is gone.
+  const child = spawn(claudeBin, args, { cwd, env: env ?? process.env, signal })
 
   let finalText = ""
   let lastFullText = ""

@@ -123,6 +123,11 @@ SITE=${CLOUD/.convex.cloud/.convex.site}
 curl -fsS "$SITE/health"    # → {"ok":true}
 ```
 
+Note the scope: `/health` proves only the **hosted Convex backend** is up. It
+says nothing about the local worker — that's a separate process, verified in
+step 4. A green `/health` with a dead worker means webhooks queue reviews that
+nothing picks up.
+
 ## 3. Secrets
 
 Two generated values (check `npx convex env list` first — skip any that are
@@ -163,12 +168,26 @@ nohup npm run dev >> worker/dashboard.out 2>&1 < /dev/null & echo $! > worker/da
 Verify:
 
 ```bash
-tail -5 worker/worker.out            # should show it connected + watching
+tail -5 worker/worker.out            # healthy startup looks like:
+#   [14:07:31Z] worker "their-hostname" up; convex=https://….convex.cloud concurrency=2
+#   [14:07:32Z] watch list (0): (empty)
 curl -fsS http://localhost:5180 >/dev/null && echo dashboard up
 ```
 
-The dashboard is at **http://localhost:5180**. To stop either:
-`kill "$(cat worker/worker.pid)"` / `kill "$(cat worker/dashboard.pid)"`.
+(Log timestamps are UTC, marked with `Z`. An empty watch list is normal at
+this point — step 5 adds the first repo.)
+
+The dashboard is at **http://localhost:5180**. To stop either, use the pid
+files — with a liveness guard, because a pid file left by a crash or reboot
+can point at an unrelated process that reused the pid:
+
+```bash
+# worker
+pid=$(cat worker/worker.pid) && ps -p "$pid" -o command= | grep -q worker/index.mjs && kill "$pid"
+# dashboard
+pid=$(cat worker/dashboard.pid) && ps -p "$pid" -o command= | grep -Eq 'npm|node|vite' && kill "$pid"
+```
+
 These survive the terminal but not a reboot — after a reboot the user re-runs
 the two commands above (or asks their agent to).
 

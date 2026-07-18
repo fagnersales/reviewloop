@@ -55,8 +55,9 @@ Check nothing is mid-review before killing the worker:
 npx convex run reviews:board    # anything in the "reviewing" bucket?
 ```
 
-- **Nothing reviewing:** restart now —
-  `kill "$(cat worker/worker.pid)" 2>/dev/null;`
+- **Nothing reviewing:** restart now (the `ps` guard skips a stale pid file
+  from a crash/reboot instead of killing whatever process recycled the pid) —
+  `pid=$(cat worker/worker.pid 2>/dev/null) && ps -p "$pid" -o command= | grep -q worker/index.mjs && kill "$pid";`
   `nohup node worker/index.mjs >> worker/worker.out 2>&1 < /dev/null & echo $! > worker/worker.pid`
 - **A review is in flight:** tell the user; either wait for it, or restart
   anyway — a killed run is auto-requeued by the `requeue stale reviews` cron
@@ -73,8 +74,8 @@ one mid-build without asking.
 
 ```bash
 CLOUD=$(grep -E '^VITE_CONVEX_URL=' .env.local | cut -d= -f2-)
-curl -fsS "${CLOUD/.convex.cloud/.convex.site}/health"    # → {"ok":true}
-tail -5 worker/worker.out                                  # reconnected
+curl -fsS "${CLOUD/.convex.cloud/.convex.site}/health"    # → {"ok":true} (backend only)
+tail -5 worker/worker.out    # the worker itself: expect a fresh `worker "…" up; convex=…` line
 ```
 
 Report to the user: what was updated (the commit summary from step 2), what
