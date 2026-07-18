@@ -423,17 +423,6 @@ function EventDetail({
             {findingsLine(pass ?? {})}
           </span>
           <ModelPill pass={pass} />
-          {event.headSha && (
-            <a
-              href={githubCommitUrl(pr.repo, event.headSha)}
-              target="_blank"
-              rel="noreferrer"
-              title="View commit on GitHub"
-              className="font-mono text-[11px] text-zinc-600 underline-offset-2 hover:text-zinc-400 hover:underline"
-            >
-              {event.headSha.slice(0, 7)}
-            </a>
-          )}
         </div>
         {pass?.report ? (
           <ReviewReport report={pass.report} />
