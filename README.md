@@ -1,6 +1,6 @@
 # reviewloop.sh
 
-**Homepage:** <https://reviewloop-home.vercel.app>
+**Homepage:** <https://reviewloop.fagner.ink>
 
 Event-driven PR review. A GitHub webhook pushes `pull_request` events into a
 standalone Convex deployment; a local worker subscribes over the Convex sync
