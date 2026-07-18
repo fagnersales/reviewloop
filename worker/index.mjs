@@ -123,6 +123,12 @@ const processingMerges = new Set()
 // Drives the `gh` reconcile; the queue itself decides what actually gets reviewed.
 let watchedRepos = []
 
+// The console-owned reviewer settings (the model + effort picker), kept live via
+// settings.get. Null until a human picks in the dashboard — reviews started
+// before then use cfg.model and the CLI's default effort. Read at spawn time,
+// so a change applies to the next review, never one already running.
+let reviewerSettings = null
+
 log(`worker "${WORKER}" up; convex=${CONVEX_URL} concurrency=${cfg.concurrency}`)
 
 // A crash can leave a clone behind; clear strays before we start making more.
@@ -264,7 +270,11 @@ async function runReview(row) {
 
 async function reviewClone(row, short, cloneDir) {
   const logFile = join(LOG_DIR, `pr-${row.prNumber}-${short}.log`)
-  log(`▶ reviewing ${row.repo}#${row.prNumber} @${short} -> ${logFile}`)
+  // The console picker (settings.get subscription) wins once a human has picked;
+  // until then, config.json's model and the CLI's own default effort apply.
+  const model = reviewerSettings?.model ?? cfg.model
+  const effort = reviewerSettings?.effort
+  log(`▶ reviewing ${row.repo}#${row.prNumber} @${short} [${model}${effort ? ` · ${effort}` : ""}] -> ${logFile}`)
 
   // stream-json (+ --verbose, required) gives us the agent's step-by-step events
   // so we can surface a live "what it's doing" line to the dashboard. The review
@@ -275,11 +285,12 @@ async function reviewClone(row, short, cloneDir) {
     "--permission-mode",
     "bypassPermissions",
     "--model",
-    cfg.model,
+    model,
     "--output-format",
     "stream-json",
     "--verbose",
   ]
+  if (effort) args.push("--effort", effort)
   const r = await streamClaude({
     claudeBin: CLAUDE_BIN,
     args,
@@ -319,13 +330,15 @@ async function reviewClone(row, short, cloneDir) {
 
   if (ok) {
     log(`✓ reviewed #${row.prNumber} (confidence ${parsed.confidence ?? "?"}/5)`)
-    await finish(row, true, { reviewUrl, report, ...parsed })
+    await finish(row, true, { reviewUrl, report, ...parsed, model, effort })
   } else {
     log(`✗ failed #${row.prNumber} (claude exit ${code}${resultIsError ? ", result error" : ""})`)
     await finish(row, false, {
       reviewUrl,
       report,
       ...parsed,
+      model,
+      effort,
       error: `claude exited ${code}${resultIsError ? " (result error)" : ""}`,
     })
   }
@@ -749,6 +762,16 @@ client.onUpdate(api.repos.list, {}, (repos) => {
     log(`watch list (${next.length}): ${next.length ? next.join(", ") : "(empty)"}`)
     reconcile("watch-change")
   }
+})
+
+// The console's reviewer model/effort picker. Applied per spawn (see
+// reviewClone), so no re-pump is needed here — in-flight reviews keep the
+// model they started with.
+client.onUpdate(api.settings.get, {}, (s) => {
+  const next = s ?? null
+  const changed = next?.model !== reviewerSettings?.model || next?.effort !== reviewerSettings?.effort
+  reviewerSettings = next
+  if (changed && next) log(`reviewer settings: model=${next.model} effort=${next.effort}`)
 })
 
 if (cfg.fallbackReconcileMin > 0) {

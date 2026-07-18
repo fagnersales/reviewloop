@@ -14,6 +14,7 @@ import type * as http from "../http.js";
 import type * as prStatus from "../prStatus.js";
 import type * as repos from "../repos.js";
 import type * as reviews from "../reviews.js";
+import type * as settings from "../settings.js";
 import type * as solveTasks from "../solveTasks.js";
 import type * as suggestedIssues from "../suggestedIssues.js";
 
@@ -30,6 +31,7 @@ declare const fullApi: ApiFromModules<{
   prStatus: typeof prStatus;
   repos: typeof repos;
   reviews: typeof reviews;
+  settings: typeof settings;
   solveTasks: typeof solveTasks;
   suggestedIssues: typeof suggestedIssues;
 }>;

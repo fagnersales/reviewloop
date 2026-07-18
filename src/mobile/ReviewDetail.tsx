@@ -31,6 +31,7 @@ import {
   ConfPill,
   ConfText,
   LoopGlyph,
+  ModelPill,
   PrStatusPill,
   ReviewReport,
   buildEvents,
@@ -162,6 +163,7 @@ function EventBody({
           <span className="rounded border border-edge bg-inset px-2 py-[3px] font-mono text-[11px] text-zinc-400">
             {findingsLine(pass ?? {})}
           </span>
+          <ModelPill pass={pass} />
           {event.headSha && (
             <a
               href={githubCommitUrl(pr.repo, event.headSha)}

@@ -23,6 +23,25 @@ export const logKind = v.union(
   v.literal("error"),
 )
 
+// ── reviewer settings (the console's model + effort picker) ─────────────────
+// What the review worker passes to `claude -p`: the model alias (`--model`) and
+// the reasoning effort (`--effort`). Values are the Claude CLI's own aliases /
+// levels — literal unions (not v.string()) so a typo'd write can never wedge
+// the worker with a flag the CLI rejects.
+export const reviewerModel = v.union(
+  v.literal("fable"),
+  v.literal("opus"),
+  v.literal("sonnet"),
+  v.literal("haiku"),
+)
+export const reviewerEffort = v.union(
+  v.literal("low"),
+  v.literal("medium"),
+  v.literal("high"),
+  v.literal("xhigh"),
+  v.literal("max"),
+)
+
 // ── follow-up suggestions ────────────────────────────────────────────────────
 // A `suggestedIssues` row is a *proposal* a pr-feature agent emitted at the
 // unattended wrap-up of a PR it built — out-of-scope work it deferred, a
@@ -224,6 +243,15 @@ export const reviewFields = {
   mergeAttempts: v.optional(v.number()),
   // results, filled by `finish`
   reviewUrl: v.optional(v.string()),
+  // what actually ran this pass, stamped by the worker: the model alias and
+  // effort level it passed to `claude -p` (`--model` / `--effort`). Plain
+  // strings, not the reviewerModel/reviewerEffort unions — they record what
+  // *happened*, which may be a config.json fallback model the picker
+  // vocabulary doesn't know. `effort` is absent when none was requested (the
+  // CLI's default applied). Distinct from `reviewEffort` below, the agent's
+  // self-scored "how hard was this review" out of 5.
+  model: v.optional(v.string()),
+  effort: v.optional(v.string()),
   confidence: v.optional(v.number()),
   reviewEffort: v.optional(v.number()),
   p0: v.optional(v.number()),
@@ -275,6 +303,17 @@ export default defineSchema({
   // it (repos.list) and reconciles/reviews whatever is here. No worker config file.
   watchedRepos: defineTable({
     repo: v.string(),
+    updatedAt: v.number(),
+  }),
+
+  // The reviewer's model + effort, picked from the console (settings.ts). At
+  // most one row, created on the first pick — no row means "nobody has picked
+  // yet", and the worker keeps using its config.json model + the CLI's default
+  // effort, so deploying this table never silently overrides an operator's
+  // existing config.
+  reviewerSettings: defineTable({
+    model: reviewerModel,
+    effort: reviewerEffort,
     updatedAt: v.number(),
   }),
 

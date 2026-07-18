@@ -325,6 +325,22 @@ export function ConfPill({ score }: { score?: number }) {
   )
 }
 
+// The "what reviewed this" chip: the model alias (+ effort level) the worker
+// stamped on the pass when it ran `claude -p`. Self-hides on passes from before
+// the stamp existed.
+export function ModelPill({ pass }: { pass?: Pass }) {
+  if (!pass?.model) return null
+  return (
+    <span
+      title="Model · effort that produced this review"
+      className="rounded border border-edge bg-inset px-2 py-[3px] font-mono text-[11px] text-zinc-500"
+    >
+      {pass.model}
+      {pass.effort ? ` · ${pass.effort}` : ""}
+    </span>
+  )
+}
+
 // The review-loop node: a 27px circle, coloured per event kind. A review is a
 // green check, a commit/opening is neutral, ack/merge/fail carry their tone, and
 // an in-flight re-review spins.

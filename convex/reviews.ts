@@ -211,6 +211,8 @@ export const finish = mutation({
     id: v.id("reviews"),
     ok: v.boolean(),
     reviewUrl: v.optional(v.string()),
+    model: v.optional(v.string()),
+    effort: v.optional(v.string()),
     confidence: v.optional(v.number()),
     reviewEffort: v.optional(v.number()),
     p0: v.optional(v.number()),
