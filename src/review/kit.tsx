@@ -152,6 +152,30 @@ export const STATUS_META: Record<StatusKey, ToneMeta> = {
   closed: { label: "CLOSED", text: "text-zinc-400", dot: "bg-zinc-600", bg: "bg-inset", border: "border-edge2", pulse: false },
 }
 
+// ── per-repo activity signal ─────────────────────────────────────────────────
+// The repo picker wears one dot per repo, in the colour of that repo's most
+// attention-needing PR. This order is "who needs to act, soonest": a broken run
+// first, then blockers nobody's on, then a clean PR waiting on the human merge,
+// then the live states, then the queue. Terminal states are deliberately absent
+// — a repo whose PRs are all merged/closed is cleaned up and shows no dot.
+const ATTENTION_ORDER: StatusKey[] = [
+  "failed", //     the run errored — needs a re-run / a look
+  "awaiting", //   reviewed, has blockers, nobody acked — the canonical "go here"
+  "verified", //   clean, waiting on the human merge gate
+  "reviewing", //  a worker is on it right now (live)
+  "inprogress", // an agent acked and is fixing (live)
+  "queued", //     waiting for a free worker
+]
+
+// The single status a repo's dot should show, given its PRs' states: the first
+// ATTENTION_ORDER entry any of them is in, or null when none are (all
+// merged/closed, or no PRs) so the repo shows nothing.
+export function mostUrgentStatus(keys: Iterable<StatusKey>): StatusKey | null {
+  const present = new Set(keys)
+  for (const k of ATTENTION_ORDER) if (present.has(k)) return k
+  return null
+}
+
 export type ConfMeta = { text: string; color: string; bg: string; border: string; star: boolean }
 
 // Confidence (the review score): a starred decimal coloured by tier — red below
@@ -301,6 +325,38 @@ export function PrStatusPill({ pr }: { pr: Pr }) {
     <span className={cn("inline-flex items-center gap-1.5 rounded border px-2.5 py-[3px] font-mono text-[10px] font-medium", m.text, m.bg, m.border)}>
       <span className={cn("size-1.5 shrink-0 rounded-full", m.dot, m.pulse && "rl-pulse")} />
       {m.label}
+    </span>
+  )
+}
+
+// The activity dot alone: a single dot in the colour of the repo's most-urgent
+// PR state (see mostUrgentStatus), pulsing for the live ones. A `null` status
+// renders an empty slot the same size, so rows stay aligned and a cleaned-up
+// repo (all merged/closed) simply shows blank space where a dot would be.
+export function ActivityDot({ status }: { status: StatusKey | null }) {
+  if (!status) return <span className="size-[7px] shrink-0" aria-hidden />
+  const m = STATUS_META[status]
+  return <span className={cn("size-[7px] shrink-0 rounded-full", m.dot, m.pulse && "rl-pulse")} />
+}
+
+// The repo-picker trailing marker: the dot, plus its status label which stays
+// clipped to zero width until the row is hovered, then softly wipes + fades in
+// to the dot's left. Needs the row to carry the `group` class (FilterDropdown's
+// option buttons do). A cleaned-up repo (`null`) is just the empty dot slot.
+export function RepoActivity({ status }: { status: StatusKey | null }) {
+  if (!status) return <ActivityDot status={null} />
+  const m = STATUS_META[status]
+  return (
+    <span className="flex items-center justify-end gap-2.5">
+      <span
+        className={cn(
+          "max-w-0 overflow-hidden whitespace-nowrap font-mono text-[9px] font-semibold tracking-[0.08em] opacity-0 transition-all duration-500 ease-out group-hover:max-w-[132px] group-hover:opacity-100",
+          m.text,
+        )}
+      >
+        {m.label}
+      </span>
+      <ActivityDot status={status} />
     </span>
   )
 }
