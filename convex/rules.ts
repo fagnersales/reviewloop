@@ -2,19 +2,21 @@ import { v } from "convex/values"
 import { mutation, query } from "./_generated/server"
 import { ruleLevel } from "./schema"
 
-// House rules — operator taste the reviewer enforces on every PR (e.g. "no code
-// comments"). Owned entirely by the console's rules editor (add/setLevel/remove
-// below) and read live by the worker via `list`, which injects the rules into
-// the review brief at spawn time — a change applies to the next review, never
-// one already running. Rules apply to every watched repo.
+// House rules — operator taste the reviewer enforces (e.g. "no code comments").
+// A rule is either global (no `repo` — applies to every watched repo) or scoped
+// to one "owner/name". Owned entirely by the console's rules editor
+// (add/setLevel/remove below) and read live by the worker via `list`, which
+// filters by the PR's repo and injects the applicable rules into the review
+// brief at spawn time — a change applies to the next review, never one already
+// running.
 //
 // Like watchedRepos, these are public mutations (the console is the gate), so
 // both the row count and the text length are hard-capped to keep the table and
 // its `.collect()`-shaped reads bounded.
 
-// Config-scale ceiling: a human curates a handful of rules. `add` rejects past
-// it, and `list` reads `.take(MAX_RULES)` so no read scans more even if the cap
-// were somehow bypassed.
+// Config-scale ceiling across all scopes: a human curates a handful of rules.
+// `add` rejects past it, and `list` reads `.take(MAX_RULES)` so no read scans
+// more even if the cap were somehow bypassed.
 export const MAX_RULES = 50
 
 // One rule is a sentence, not an essay — long policy belongs in the repo's
@@ -24,31 +26,47 @@ export const MAX_RULE_LENGTH = 300
 export const list = query({
   args: {},
   returns: v.array(
-    v.object({ id: v.id("reviewRules"), text: v.string(), level: ruleLevel }),
+    v.object({
+      id: v.id("reviewRules"),
+      text: v.string(),
+      level: ruleLevel,
+      repo: v.optional(v.string()),
+    }),
   ),
   handler: async (ctx) => {
     const rows = await ctx.db.query("reviewRules").take(MAX_RULES)
-    return rows.map((r) => ({ id: r._id, text: r.text, level: r.level }))
+    return rows.map((r) => ({ id: r._id, text: r.text, level: r.level, repo: r.repo }))
   },
 })
 
 export const add = mutation({
-  args: { text: v.string(), level: ruleLevel },
+  args: { text: v.string(), level: ruleLevel, repo: v.optional(v.string()) },
   returns: v.union(
     v.literal("added"),
     v.literal("exists"),
     v.literal("invalid"),
     v.literal("full"),
   ),
-  handler: async (ctx, { text, level }) => {
+  handler: async (ctx, { text, level, repo }) => {
     const rule = text.trim()
     if (!rule || rule.length > MAX_RULE_LENGTH) return "invalid"
-    // One bounded read serves both checks: dedup (case-insensitive) and the cap.
+    const scope = repo?.trim() || undefined
+    if (scope && !/^[^/\s]+\/[^/\s]+$/.test(scope)) return "invalid"
+    // One bounded read serves both checks: dedup and the cap. Dedup is per
+    // scope (both case-insensitive — GitHub slugs are): the same sentence may
+    // exist globally and for a repo, but not twice in one scope.
     const rows = await ctx.db.query("reviewRules").take(MAX_RULES)
     const target = rule.toLowerCase()
-    if (rows.some((r) => r.text.toLowerCase() === target)) return "exists"
+    const targetScope = scope?.toLowerCase() ?? null
+    if (
+      rows.some(
+        (r) =>
+          r.text.toLowerCase() === target && (r.repo?.toLowerCase() ?? null) === targetScope,
+      )
+    )
+      return "exists"
     if (rows.length >= MAX_RULES) return "full"
-    await ctx.db.insert("reviewRules", { text: rule, level, updatedAt: Date.now() })
+    await ctx.db.insert("reviewRules", { text: rule, level, repo: scope, updatedAt: Date.now() })
     return "added"
   },
 })

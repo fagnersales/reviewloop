@@ -1,9 +1,10 @@
 // The house-rules editor at the foot of the nav rail (admin build only — the
-// read-only console hides it). Operator taste the reviewer enforces on every
-// PR, e.g. "no code comments": each rule is a sentence plus a level — block
-// (violations post at P1, a merge blocker) or warn (P2, a note). Writes go
-// straight to Convex (rules.add / setLevel / remove); the worker subscribes and
-// injects the rules into the next review's brief.
+// read-only console hides it). Operator taste the reviewer enforces, e.g. "no
+// code comments": each rule is a sentence plus a level — block (violations post
+// at P1, a merge blocker) or warn (P2, a note) — and a scope: every watched
+// repo (global) or one repo. Writes go straight to Convex (rules.add /
+// setLevel / remove); the worker subscribes and injects the applicable rules
+// into the next review's brief.
 import { useEffect, useState } from "react"
 import { useMutation } from "convex/react"
 import { useQuery } from "convex-helpers/react/cache/hooks"
@@ -26,13 +27,19 @@ const LEVEL_TONE: Record<Level, string> = {
   warn: "border-[#e3b341]/30 bg-[#e3b341]/10 text-[#fcd34d]",
 }
 
+// "" is the global scope in the select and the draft state; Convex stores
+// global as an absent `repo`.
+const ALL_REPOS = ""
+
 export function HouseRules() {
   const readOnly = useReadOnly()
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState("")
   const [draftLevel, setDraftLevel] = useState<Level>("block")
+  const [draftRepo, setDraftRepo] = useState(ALL_REPOS)
   const [notice, setNotice] = useState<string | null>(null)
   const rules = useQuery(api.rules.list)
+  const repos = useQuery(api.repos.list)
   const add = useMutation(api.rules.add)
   const setLevel = useMutation(api.rules.setLevel)
   const remove = useMutation(api.rules.remove)
@@ -49,18 +56,23 @@ export function HouseRules() {
   if (readOnly) return null
 
   const count = rules?.length ?? 0
+  // Global rules first, then grouped by repo (insertion order within — sort is
+  // stable), so scope reads top-down: everywhere, then per repo.
+  const sorted = rules
+    ? [...rules].sort((a, b) => (a.repo?.toLowerCase() ?? "").localeCompare(b.repo?.toLowerCase() ?? ""))
+    : undefined
 
   const submit = async () => {
     const text = draft.trim()
     if (!text) return
-    const result = await add({ text, level: draftLevel })
+    const result = await add({ text, level: draftLevel, repo: draftRepo || undefined })
     if (result === "added") {
       setDraft("")
       setNotice(null)
     } else {
       setNotice(
         result === "exists"
-          ? "Already a rule."
+          ? "Already a rule in that scope."
           : result === "full"
             ? "Rule list is full."
             : "Rule is too long.",
@@ -101,20 +113,20 @@ export function HouseRules() {
               </span>
             </div>
             <p className="m-0 mb-3 text-[11.5px] leading-relaxed text-zinc-500">
-              Taste the reviewer enforces on every PR. <span className="text-[#fca5a5]">block</span> violations
-              post at P1 (merge blocker), <span className="text-[#fcd34d]">warn</span> at P2. Applies from the
-              next review; click a badge to switch its level.
+              Taste the reviewer enforces — on every repo or one. <span className="text-[#fca5a5]">block</span>{" "}
+              violations post at P1 (merge blocker), <span className="text-[#fcd34d]">warn</span> at P2. Applies
+              from the next review; click a badge to switch its level.
             </p>
 
-            {rules === undefined ? (
+            {sorted === undefined ? (
               <p className="m-0 text-[11px] text-zinc-600">Loading…</p>
-            ) : rules.length === 0 ? (
+            ) : sorted.length === 0 ? (
               <p className="m-0 text-[11px] leading-relaxed text-zinc-600">
                 No rules yet — reviews run on the standard brief alone.
               </p>
             ) : (
               <ul className="m-0 flex list-none flex-col gap-1 p-0">
-                {rules.map((r) => (
+                {sorted.map((r) => (
                   <li key={r.id} className="group flex items-start gap-2 rounded-[5px] px-1 py-[3px]">
                     <button
                       type="button"
@@ -129,6 +141,14 @@ export function HouseRules() {
                     </button>
                     <span className="min-w-0 flex-1 break-words text-[11.5px] leading-snug text-zinc-300">
                       {r.text}
+                      {r.repo && (
+                        <span
+                          title={`Applies only to ${r.repo}`}
+                          className="ml-1.5 inline-block rounded border border-edge bg-inset px-1 py-px align-[1px] font-mono text-[8.5px] text-zinc-500"
+                        >
+                          {r.repo.split("/")[1] ?? r.repo}
+                        </span>
+                      )}
                     </span>
                     <button
                       type="button"
@@ -159,6 +179,19 @@ export function HouseRules() {
                 className="w-full rounded-[5px] border border-edge bg-inset px-2 py-[6px] font-mono text-[11px] text-zinc-200 placeholder:text-zinc-600 focus:border-edge2 focus:outline-none"
               />
               <div className="mt-1.5 flex items-center gap-1">
+                <select
+                  value={draftRepo}
+                  onChange={(e) => setDraftRepo(e.target.value)}
+                  title="Which repo the rule applies to"
+                  className="min-w-0 flex-1 rounded-[5px] border border-edge bg-inset px-1 py-[3px] font-mono text-[10px] text-zinc-400 focus:border-edge2 focus:outline-none"
+                >
+                  <option value={ALL_REPOS}>all repos</option>
+                  {(repos ?? []).map((repo) => (
+                    <option key={repo} value={repo}>
+                      {repo}
+                    </option>
+                  ))}
+                </select>
                 {LEVELS.map((l) => (
                   <button
                     key={l.value}
@@ -166,7 +199,7 @@ export function HouseRules() {
                     onClick={() => setDraftLevel(l.value)}
                     title={l.hint}
                     className={cn(
-                      "rounded border px-1.5 py-[3px] font-mono text-[9px] uppercase tracking-[0.08em] transition-colors",
+                      "shrink-0 rounded border px-1.5 py-[3px] font-mono text-[9px] uppercase tracking-[0.08em] transition-colors",
                       draftLevel === l.value
                         ? LEVEL_TONE[l.value]
                         : "border-edge bg-inset text-zinc-600 hover:text-zinc-400",
@@ -175,12 +208,11 @@ export function HouseRules() {
                     {l.value}
                   </button>
                 ))}
-                <span className="flex-1" />
                 <button
                   type="button"
                   disabled={!draft.trim()}
                   onClick={() => void submit()}
-                  className="rounded-[5px] border border-edge bg-inset px-2 py-[3px] font-mono text-[10px] text-zinc-400 transition-colors hover:border-edge2 hover:text-zinc-200 disabled:opacity-40"
+                  className="shrink-0 rounded-[5px] border border-edge bg-inset px-2 py-[3px] font-mono text-[10px] text-zinc-400 transition-colors hover:border-edge2 hover:text-zinc-200 disabled:opacity-40"
                 >
                   Add
                 </button>

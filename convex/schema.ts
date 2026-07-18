@@ -333,6 +333,10 @@ export default defineSchema({
   reviewRules: defineTable({
     text: v.string(),
     level: ruleLevel,
+    // Scope: absent = global (applies to every watched repo), or "owner/name"
+    // to apply to that one repo. The worker filters per review at spawn time
+    // (case-insensitive, like the watch list — GitHub slugs are).
+    repo: v.optional(v.string()),
     updatedAt: v.number(),
   }),
 

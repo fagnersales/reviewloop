@@ -129,9 +129,11 @@ let watchedRepos = []
 // so a change applies to the next review, never one already running.
 let reviewerSettings = null
 
-// The console-owned house rules (the taste editor), kept live via rules.list.
-// Injected into the review brief at spawn time — same contract as the settings:
-// a change applies to the next review, never one already running.
+// The console-owned house rules (the taste editor), kept live via rules.list —
+// the full set, global and repo-scoped; rulesForRepo filters per review. The
+// applicable rules are injected into the review brief at spawn time — same
+// contract as the settings: a change applies to the next review, never one
+// already running.
 let houseRules = []
 
 log(`worker "${WORKER}" up; convex=${CONVEX_URL} concurrency=${cfg.concurrency}`)
@@ -158,7 +160,14 @@ async function cloneRepo(repo, dir) {
   return { ok: false, error: errorReason(err, `gh repo clone exited ${code}`) }
 }
 
-// The operator's house rules as a brief section, or "" when none are defined.
+// The house rules that apply to one repo: the global ones (no scope) plus the
+// ones scoped to it. Case-insensitive, like the watch list — GitHub slugs are.
+function rulesForRepo(rules, repo) {
+  const target = repo.toLowerCase()
+  return rules.filter((r) => !r.repo || r.repo.toLowerCase() === target)
+}
+
+// The operator's house rules as a brief section, or "" when none apply.
 // Levels ride the skill's existing severity machinery — a [BLOCK] violation is a
 // P1 (a merge blocker, so `await` exits 2 and a fix agent picks it up), a [WARN]
 // violation is a P2 — so no downstream parsing changes.
@@ -214,7 +223,7 @@ The local checkout is the default branch, **not** the PR branch, so read the PR'
 actual contents from \`origin\` with \`gh\`/\`git\` as the instructions describe. When a
 \`gh\` command needs the repo, it is \`${row.repo}\` (pass \`--repo ${row.repo}\`). Post
 exactly one \`COMMENT\` review to GitHub, then close your message with the review
-URL, the confidence score, the review-effort score, and the P0/P1/P2 counts.${houseRulesSection(houseRules)}`
+URL, the confidence score, the review-effort score, and the P0/P1/P2 counts.${houseRulesSection(rulesForRepo(houseRules, row.repo))}`
 }
 
 // Remove `reviewloop-review-*` clone dirs left in CLONE_BASE by a prior crash. Bounded
@@ -819,9 +828,15 @@ client.onUpdate(api.rules.list, {}, (rules) => {
   const next = rules ?? []
   const changed =
     next.length !== houseRules.length ||
-    next.some((r, i) => r.text !== houseRules[i].text || r.level !== houseRules[i].level)
+    next.some(
+      (r, i) =>
+        r.text !== houseRules[i].text || r.level !== houseRules[i].level || r.repo !== houseRules[i].repo,
+    )
   houseRules = next
-  if (changed) log(`house rules (${next.length}): ${next.map((r) => `[${r.level}] ${r.text}`).join(" · ") || "(none)"}`)
+  if (changed)
+    log(
+      `house rules (${next.length}): ${next.map((r) => `[${r.level}${r.repo ? `@${r.repo}` : ""}] ${r.text}`).join(" · ") || "(none)"}`,
+    )
 })
 
 if (cfg.fallbackReconcileMin > 0) {
