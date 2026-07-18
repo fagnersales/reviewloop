@@ -9,6 +9,8 @@ worker/worker.out
 worker/worker.pid
 worker/solver.out
 worker/solver.pid
+worker/dashboard.out
+worker/dashboard.pid
 worker/logs/
 *.tsbuildinfo
 .claude/worktrees/

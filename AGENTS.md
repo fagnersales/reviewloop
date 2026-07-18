@@ -11,3 +11,13 @@ Convex agent skills for common tasks can be installed by running
 `npx convex ai-files install`.
 
 <!-- convex-ai-end -->
+
+# reviewloop — agent pointers
+
+- **Installing this tool for a user?** Follow [INSTALL.md](INSTALL.md).
+- **Updating an existing install?** Follow [UPDATE.md](UPDATE.md).
+- **Working in this repo** (the code itself)? Read [CLAUDE.md](CLAUDE.md) —
+  it is the full agent playbook (waiting on reviews via `worker/await.mjs`,
+  acking via `worker/ack.mjs`, the autonomous solver) and applies to every
+  agent, not just Claude Code. [CONTEXT.md](CONTEXT.md) holds the domain
+  glossary.

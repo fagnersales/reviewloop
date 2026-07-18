@@ -10,6 +10,30 @@ dashboard shows the live state: what's queued, what's **being verified** (with a
 elapsed timer, since a review takes ~10 min), and what's been **verified** (with
 the GitHub review link + confidence score).
 
+## Install (one prompt)
+
+reviewloop is installed *by your coding agent*. Paste this into Claude Code,
+Codex, or any agent that can fetch a URL and run commands:
+
+> Fetch https://raw.githubusercontent.com/fagnersales/reviewloop/master/INSTALL.md and follow it to install reviewloop for me.
+
+The playbook ([INSTALL.md](INSTALL.md)) checks prerequisites, walks you
+through creating your own free Convex project (guiding from zero if you've
+never used Convex), starts the worker + dashboard, watches your first repo,
+and teaches your agents to block on reviews via `reviewloop-await`. It's
+idempotent — re-running it completes a partial install.
+
+**Updating:** tell your agent *"Open UPDATE.md in my reviewloop folder and
+follow it"* (in Claude Code, `/update-reviewloop`). All local state is
+gitignored, so an update is a clean pull + `npx convex dev --once` + worker
+restart — see [UPDATE.md](UPDATE.md). Forks stay updatable too: clone your
+fork, keep this repo as the `upstream` remote, and the same playbook merges
+new features in.
+
+**Engine note:** reviews are performed by the Claude Code CLI (`claude -p`),
+so that's a hard prerequisite even if you drive the install from another
+agent. A `codex exec` engine adapter is a welcome contribution.
+
 This replaced the retired `prr` poll loop (the old `~/.local/bin/prr` +
 `~/.pr-review-loop` gh-polling daemon, now removed).
 
@@ -43,14 +67,17 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
   issue and open a PR. Its checkout registry is `worker/solver.config.json`
   (host-specific, gitignored). See [The autonomous solver](#the-autonomous-solver-issue--pr).
 - `src/` — the dashboard.
+- `site/` — the public homepage (static, deployed to Vercel; no build step).
 
-## One-time setup
+## Manual setup
+
+What [INSTALL.md](INSTALL.md) automates, spelled out:
 
 1. **Install + create the deployment** (interactive — opens a browser to log in
-   and create a *new, separate* Convex project; do not reuse roblox-auto-delivery):
+   and create a **new** Convex project):
 
    ```bash
-   cd /Users/fagnersales/prototype/reviewloop
+   cd <your reviewloop checkout>
    npm install
    npx convex dev          # creates the deployment, writes .env.local, pushes functions
    ```
@@ -70,7 +97,7 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
 
    ```bash
    SITE_URL="https://<your-deployment>.convex.site"
-   gh api repos/fagnersales/roblox-auto-delivery/hooks \
+   gh api repos/<owner/name>/hooks \
      -f name=web -F active=true \
      -f 'events[]=pull_request' \
      -f config[url]="$SITE_URL/github/webhook" \
@@ -78,7 +105,7 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
      -f config[secret]="$SECRET"
    ```
 
-   > The current `gh` token has `repo` but not `admin:repo_hook`. `repo` usually
+   > Your `gh` token may have `repo` but not `admin:repo_hook`. `repo` usually
    > suffices; if GitHub 403s, run `gh auth refresh -s admin:repo_hook` and retry,
    > or add it manually in **repo Settings ▸ Webhooks ▸ Add webhook** (payload URL
    > `$SITE_URL/github/webhook`, content type `application/json`, the same secret,
@@ -96,7 +123,7 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
 The worker is just a long-lived Node subscriber (`worker/index.mjs`). Two ways:
 
 ```bash
-# foreground (like `npm run locator`)
+# foreground
 npm run worker
 
 # background (survives the terminal, not a reboot)
@@ -106,8 +133,8 @@ kill "$(cat worker/worker.pid)"   # stop the background one
 tail -f worker/worker.out          # worker log; per-PR run logs in worker/logs/
 ```
 
-For auto-start on login/reboot, wrap it in a launchd agent (not set up by
-default — mirrors how the locator is run manually).
+For auto-start on login/reboot, wrap it in a launchd/systemd agent (not set
+up by default).
 
 ## The autonomous solver (issue → PR)
 
@@ -240,7 +267,7 @@ spawn sets `REVIEWLOOP_UNATTENDED=1`, the contract that tells `pr-feature` it's 
 - `GET $SITE_URL/health` → `{ "ok": true }`.
 - Push a commit to an open PR (or open a throwaway one). Within seconds the board
   goes **Queued → Verifying (timer) → Verified** with a link to the posted review.
-- `gh api repos/fagnersales/roblox-auto-delivery/hooks/<id>/deliveries` → `200`s.
+- `gh api repos/<owner/name>/hooks/<id>/deliveries` → `200`s.
 - Re-deliver the same event from GitHub's webhook UI → no duplicate row (dedup by
   head SHA).
 - Kill the worker mid-review → the `requeue stale reviews` cron flips it back to
@@ -440,3 +467,7 @@ worker reconcile gate on it (`doEnqueue` in `convex/reviews.ts`):
 
 A repo only gets auto-cloned and reviewed (under `claude --permission-mode
 bypassPermissions`) while it's on this list, so keep it to repos you trust.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

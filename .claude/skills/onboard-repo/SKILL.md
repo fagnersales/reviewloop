@@ -28,9 +28,8 @@ state first, so re-running on a partially-configured repo just completes it.
 ## Where to run
 
 All `npx convex …`, `.env.local` reads, and `worker/solver.config.json` edits run
-from the **reviewloop repo root** — the directory this skill lives in
-(`/Users/fagnersales/prototype/reviewloop`). `cd` there first (or use absolute
-paths). The *target* repo (`owner/name`) is only ever touched through `gh --repo`
+from the **reviewloop repo root** — the checkout this skill lives in (three
+directories up from this SKILL.md). `cd` there first (or use absolute paths). The *target* repo (`owner/name`) is only ever touched through `gh --repo`
 and the clone in step 3 — never checked out into reviewloop.
 
 ## Prerequisites

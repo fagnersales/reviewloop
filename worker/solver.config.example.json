@@ -9,7 +9,7 @@
   "maxFixRounds": 3,
   "fallbackReconcileMin": 20,
   "checkouts": {
-    "fagnersales/roblox-auto-delivery": "~/solver-checkouts/roblox-auto-delivery",
-    "fagnersales/reviewloop": "~/solver-checkouts/reviewloop"
+    "your-user/some-watched-repo": "~/solver-checkouts/some-watched-repo",
+    "your-user/another-repo": "~/solver-checkouts/another-repo"
   }
 }
