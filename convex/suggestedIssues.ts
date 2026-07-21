@@ -37,7 +37,7 @@ function slug(s: string): string {
     .slice(0, 80)
 }
 
-// Stable idempotency key for a proposal: an agent re-run, or a second pr-feature
+// Stable idempotency key for a proposal: an agent re-run, or a second reviewloop-feature
 // session on the same PR, derives the same key and collapses onto the same row.
 // Repo slugs are case-insensitive, matched the same way as convex/repos.ts.
 function dedupKeyFor(repo: string, prNumber: number, title: string): string {
@@ -54,7 +54,7 @@ async function isWatched(ctx: MutationCtx, repo: string): Promise<boolean> {
 
 // ── producer: the reviewloop-suggest CLI ─────────────────────────────────────────────
 
-// One proposed follow-up, as the pr-feature agent emits it (files optional).
+// One proposed follow-up, as the reviewloop-feature agent emits it (files optional).
 const suggestItem = v.object({
   category: suggestionCategory,
   source: suggestionSource,

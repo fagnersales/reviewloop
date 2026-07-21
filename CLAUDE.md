@@ -63,8 +63,7 @@ started until that agent pushes a commit — acking is how you tell it. Run:
 node worker/ack.mjs <pr> --repo <owner/name> --head <sha>
 ```
 
-(installed bin alias: `reviewloop-ack <pr>`; the pre-rename `prr-ack`/`prr-await`/
-`prr-suggest` aliases and `PRR_*` env vars still work). It stamps the `reviews` row for that head
+(installed bin alias: `reviewloop-ack <pr>`). It stamps the `reviews` row for that head
 SHA and exits: `0` acked · `2` nothing to ack (no reviewed pass yet, or the PR is
 merged/closed) · `1` usage/connection error. `--head` defaults to the PR's latest
 pass; `--repo` is auto-resolved from `gh`. When you bail on a PR you acked, release
@@ -76,7 +75,7 @@ push a fix, so the board reverts to **Awaiting agent** for someone else.
 
 The third worker in this repo (beside the review worker and the await/ack CLIs).
 It closes the loop: a GitHub issue labelled **`ready-for-agent`** → the solver
-spawns `claude -p "/pr-feature …"` against a **registered local checkout** (it needs
+spawns `claude -p "/reviewloop-feature …"` against a **registered local checkout** (it needs
 the gitignored `.env.local`/`node_modules` a build requires — a throwaway clone
 won't do) → the agent builds it, opens a PR (`Closes #N`), runs its own `reviewloop-await`
 auto-fix loop, and **stops**. The opened PR is then reviewed by the review half for
@@ -89,9 +88,8 @@ Operator/agent notes if you touch this:
   watched repo with no registered checkout has its solve **failed fast** with a clear
   reason, never silently stalled.
 - Every autonomous spawn sets **`REVIEWLOOP_UNATTENDED=1`** (the contract that tells
-  `pr-feature` it's headless — flush follow-ups via `reviewloop-suggest`, skip human
-  chatter; the pre-rename `PRR_UNATTENDED=1` is still set alongside it until the
-  skill migrates) and assigns a deterministic branch `solve/issue-<N>-<slug>` so the worker
+  `reviewloop-feature` it's headless — flush follow-ups via `reviewloop-suggest`, skip human
+  chatter) and assigns a deterministic branch `solve/issue-<N>-<slug>` so the worker
   can locate the opened PR and clean up the local worktree afterward.
 - Run it with `npm run solver` (separate process from `npm run worker`). It gates on
   the **real GitHub `ready-for-agent` label** (so manually-triaged issues work too),

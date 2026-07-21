@@ -116,7 +116,7 @@ gh api repos/owner/name/hooks \
 
 The solver builds in a **real** checkout because a build needs gitignored artifacts
 git doesn't carry (`.env.local`, `node_modules`, caches). Use a **dedicated**,
-solver-owned clone — never the user's personal one (the pr-feature worktree symlinks
+solver-owned clone — never the user's personal one (the reviewloop-feature worktree symlinks
 `node_modules` back to the parent, so a solve running `npm install` would mutate
 their deps, and stale worktrees would litter a repo they use).
 
@@ -195,7 +195,7 @@ Then report concisely:
   (re)started — or the restart the user still needs to do.
 - **To trigger a solve:** label any open issue **`ready-for-agent`** (a human gate —
   via the triage flow or `gh issue edit <n> --repo owner/name --add-label ready-for-agent`).
-  The solver claims it, spawns `/pr-feature` in the checkout, opens a PR (`Closes #N`),
+  The solver claims it, spawns `/reviewloop-feature` in the checkout, opens a PR (`Closes #N`),
   and the review half reviews it. **A human merges — the solver never does.**
 
 ## Notes & guardrails

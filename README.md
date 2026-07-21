@@ -7,7 +7,7 @@ standalone Convex deployment; a local worker subscribes over the Convex sync
 websocket and reviews each PR the moment it opens or is pushed to — no polling.
 For each review the worker clones the repo into a throwaway temp dir and runs
 `claude -p` with the review instructions passed **inline**, so a watched repo
-needs no local checkout and no `/pr-review` skill installed in it. A small
+needs no local checkout and no `/reviewloop-review` skill installed in it. A small
 dashboard shows the live state: what's queued, what's **being verified** (with an
 elapsed timer, since a review takes ~10 min), and what's been **verified** (with
 the GitHub review link + confidence score).
@@ -37,10 +37,7 @@ so that's a hard prerequisite even if you drive the install from another
 agent. A `codex exec` engine adapter is a welcome contribution.
 
 This replaced the retired `prr` poll loop (the old `~/.local/bin/prr` +
-`~/.pr-review-loop` gh-polling daemon, now removed).
-
-Formerly named **prr-console**. The pre-rename `prr-await`/`prr-ack`/`prr-suggest`
-bin aliases and `PRR_*` env vars are still honored for anything not yet migrated.
+`~/.reviewloop-review-loop` gh-polling daemon, now removed).
 
 ```
 GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signature-256)
@@ -65,7 +62,7 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
   list lives in Convex (managed from the dashboard); `worker/config.json` holds
   only host settings (model, concurrency, clone dir).
 - `worker/solver.mjs` — a separate long-lived subscriber that runs **solves**:
-  spawns `/pr-feature` against a configured checkout to build a `ready-for-agent`
+  spawns `/reviewloop-feature` against a configured checkout to build a `ready-for-agent`
   issue and open a PR. Its checkout registry is `worker/solver.config.json`
   (host-specific, gitignored). See [The autonomous solver](#the-autonomous-solver-issue--pr).
 - `src/` — the dashboard.
@@ -145,7 +142,7 @@ up by default).
 
 The review worker reviews PRs. The **solver** worker (`worker/solver.mjs`) closes
 the loop the other way: when a GitHub issue carries the **`ready-for-agent`** label,
-it spawns an autonomous `claude -p "/pr-feature …"` run that **builds the feature
+it spawns an autonomous `claude -p "/reviewloop-feature …"` run that **builds the feature
 and opens a PR** (`Closes #N`). That PR is then reviewed by the review half *for
 free*, auto-fixed for a few rounds, and **left for a human to merge** — the solver
 **never merges**.
@@ -154,7 +151,7 @@ free*, auto-fixed for a few rounds, and **left for a human to merge** — the so
 issue labelled ready-for-agent ──issues webhook / reconcile──▶ solveTasks (Convex)
         │ solver subscribes, claims
         ▼
-  worker/solver.mjs ──spawns──▶ claude -p "/pr-feature solve #N"  (cwd = configured checkout)
+  worker/solver.mjs ──spawns──▶ claude -p "/reviewloop-feature solve #N"  (cwd = configured checkout)
         │                            │ EnterWorktree → build → open PR (Closes #N)
         │                            │ → reviewloop-await loop → auto-fix N rounds → STOP
         ▼                            ▼
@@ -165,9 +162,9 @@ issue labelled ready-for-agent ──issues webhook / reconcile──▶ solveTa
 ```
 
 The elegance: the solver does **not** reimplement build/review/fix. The global
-`pr-feature` skill already does all of it (worktree → build → open PR → `reviewloop-await`
+`reviewloop-feature` skill already does all of it (worktree → build → open PR → `reviewloop-await`
 loop → auto-fix → stop clean). The solver just: find a ready-for-agent issue → claim
-→ spawn `pr-feature` in the right folder → capture the PR → clean up.
+→ spawn `reviewloop-feature` in the right folder → capture the PR → clean up.
 
 **Why a separate process + a local checkout (not the review worker's throwaway
 clone):** *building* needs what git does not carry — `.env.local` (secrets, the live
@@ -223,7 +220,7 @@ triage picker). The `claim` itself is also guarded server-side by the atomic Con
    ```
 
    Use **dedicated, solver-owned** checkouts — not your personal clones. The
-   `pr-feature` worktree symlinks `node_modules` back to the parent, so a solve that
+   `reviewloop-feature` worktree symlinks `node_modules` back to the parent, so a solve that
    runs `npm install` would mutate *your* deps, and stale worktrees would litter a
    repo you actively use. One-time per repo:
 
@@ -265,7 +262,7 @@ Override the checkout map via the `REVIEWLOOP_SOLVER_CHECKOUTS` env var (JSON); 
 `REVIEWLOOP_CONVEX_URL`, `CLAUDE_BIN`. The solve task lifecycle is
 `queued → solving → pr-opened → done | failed` (the `pull_request` merge webhook
 flips `pr-opened → done`, closing the issue → solve → PR lineage). Every autonomous
-spawn sets `REVIEWLOOP_UNATTENDED=1`, the contract that tells `pr-feature` it's headless.
+spawn sets `REVIEWLOOP_UNATTENDED=1`, the contract that tells `reviewloop-feature` it's headless.
 
 ## Verify end-to-end
 

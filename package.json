@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Event-driven PR-review console: GitHub webhook -> Convex -> local worker fires `claude -p /pr-review`, with a live dashboard.",
+  "description": "Event-driven PR-review console: GitHub webhook -> Convex -> local worker fires `claude -p /reviewloop-review`, with a live dashboard.",
   "scripts": {
     "dev": "vite",
     "dev:convex": "convex dev",
@@ -19,10 +19,7 @@
   "bin": {
     "reviewloop-await": "worker/await.mjs",
     "reviewloop-ack": "worker/ack.mjs",
-    "reviewloop-suggest": "worker/suggest.mjs",
-    "prr-await": "worker/await.mjs",
-    "prr-ack": "worker/ack.mjs",
-    "prr-suggest": "worker/suggest.mjs"
+    "reviewloop-suggest": "worker/suggest.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

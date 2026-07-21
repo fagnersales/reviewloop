@@ -42,8 +42,7 @@ export function envLocalUrl() {
 
 // The one precedence order every script agrees on: env var > config > .env.local.
 export function resolveConvexUrl(cfg) {
-  // PRR_CONVEX_URL is the pre-rename (prr-console) name, honored for compat.
-  return process.env.REVIEWLOOP_CONVEX_URL || process.env.PRR_CONVEX_URL || cfg.convexUrl || envLocalUrl()
+  return process.env.REVIEWLOOP_CONVEX_URL || cfg.convexUrl || envLocalUrl()
 }
 
 // ── child processes: run / gh ────────────────────────────────────────────────

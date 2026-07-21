@@ -21,8 +21,8 @@
 //      dir (blobless partial clone, so history for git log/blame still works) and
 //      deletes it when done — so a repo only has to be on the watch list, never
 //      checked out on this host.
-//   2. The `pr-review` skill installed in the target repo. The review
-//      instructions live in this console (.claude/skills/pr-review/SKILL.md) and
+//   2. The `reviewloop-review` skill installed in the target repo. The review
+//      instructions live in this console (.claude/skills/reviewloop-review/SKILL.md) and
 //      are passed inline as the prompt, so any watched repo is reviewable as-is.
 
 import { ConvexClient } from "convex/browser"
@@ -66,23 +66,23 @@ if (!CONVEX_URL) {
   process.exit(1)
 }
 
-// Where the inline review instructions come from: this console's own pr-review
+// Where the inline review instructions come from: this console's own reviewloop-review
 // skill body (frontmatter stripped). One source of truth — the target repo no
 // longer needs the skill installed for the worker to review it.
-const SKILL_FILE = join(__dirname, "..", ".claude", "skills", "pr-review", "SKILL.md")
+const SKILL_FILE = join(__dirname, "..", ".claude", "skills", "reviewloop-review", "SKILL.md")
 
 // Throwaway clones live here, one per review, each dir named `reviewloop-review-*`.
 const CLONE_PREFIX = "reviewloop-review-"
-const CLONE_BASE = process.env.REVIEWLOOP_CLONE_DIR || process.env.PRR_CLONE_DIR || cfg.cloneDir || tmpdir()
+const CLONE_BASE = process.env.REVIEWLOOP_CLONE_DIR || cfg.cloneDir || tmpdir()
 mkdirSync(CLONE_BASE, { recursive: true })
 
-// The review instructions, loaded once: the pr-review skill body, minus two
+// The review instructions, loaded once: the reviewloop-review skill body, minus two
 // interactive bits that don't apply to an automated, no-human run —
 //   - the YAML frontmatter, and
 //   - the "## Inputs" section, which resolves *which* PR to review (and may "ask
 //     the user which one"). The PR is supplied explicitly by reviewPrompt's
 //     "This run" appendix, so leaving Inputs in only creates an instruction
-//     conflict. (SKILL.md keeps it for interactive /pr-review use.)
+//     conflict. (SKILL.md keeps it for interactive /reviewloop-review use.)
 // A loud failure here beats every review silently failing.
 let REVIEW_SKILL
 try {
@@ -212,7 +212,7 @@ function reviewPrompt(row) {
 
 You are running as an automated reviewer inside a fresh, throwaway clone of
 **${row.repo}**, checked out at its default branch. There is no human in the loop
-and no \`/pr-review\` skill installed — the instructions above are the whole brief.
+and no \`/reviewloop-review\` skill installed — the instructions above are the whole brief.
 
 - Repo: \`${row.repo}\`
 - PR to review: **#${row.prNumber}** — ${row.title || "(no title)"}
@@ -325,7 +325,7 @@ async function reviewClone(row, short, cloneDir) {
 
   // stream-json (+ --verbose, required) gives us the agent's step-by-step events
   // so we can surface a live "what it's doing" line to the dashboard. The review
-  // brief is passed inline (no /pr-review skill needed in the target repo).
+  // brief is passed inline (no /reviewloop-review skill needed in the target repo).
   const args = [
     "-p",
     reviewPrompt(row),
@@ -641,11 +641,9 @@ async function findIssueByMarker(repo, dedupKey) {
   if (code !== 0) return undefined
   try {
     const arr = JSON.parse(out)
-    // Also match the pre-rename marker so issues filed before the reviewloop
-    // rename still dedup instead of being re-filed.
-    const markers = [`reviewloop-suggest:${dedupKey}`, `prr-suggest:${dedupKey}`]
-    return arr.find((i) => typeof i.body === "string" && markers.some((m) => i.body.includes(m)))
-      ?.number
+    return arr.find(
+      (i) => typeof i.body === "string" && i.body.includes(`reviewloop-suggest:${dedupKey}`),
+    )?.number
   } catch {
     return undefined
   }
@@ -733,7 +731,7 @@ async function syncSuggestedLabel(row) {
 // runs the actual merge. `gh pr merge` enforces branch protection / required checks
 // server-side, so an unmergeable PR fails here with a reason (surfaced in the
 // console) rather than being force-merged. Squash + delete-branch mirrors the
-// pr-feature merge convention.
+// reviewloop-feature merge convention.
 async function doMerge(row) {
   const id = row._id
   if (processingMerges.has(id)) return

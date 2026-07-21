@@ -87,7 +87,7 @@ http.route({
 
     // ── issues event: the autonomous solver's trigger ────────────────────────
     // A `ready-for-agent` label landing on an open issue enqueues a solve (the
-    // worker spawns `/pr-feature` to build it and open a PR). Removing the label or
+    // worker spawns `/reviewloop-feature` to build it and open a PR). Removing the label or
     // closing the issue cancels a still-queued solve. Gate on the real GitHub label
     // so manually-triaged issues work too, not just agent-proposed ones. (The
     // `issues` event must be enabled on the repo webhook — the reconcile fallback

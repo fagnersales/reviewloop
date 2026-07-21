@@ -1,12 +1,12 @@
 ---
-name: pr-review
+name: reviewloop-review
 description:
   Greptile-style pull-request review — investigate beyond the diff (callers,
   callees, schema, git history, cross-layer assumptions), then post a single
   COMMENT review with severity-badged inline findings and a summary (confidence
   score, file table, optional Mermaid diagram). Review only; never writes
   features or pushes code. Use when the user wants a PR reviewed, says
-  "/pr-review", "review PR #N", "review this PR", or "greptile this".
+  "/reviewloop-review", "review PR #N", "review this PR", or "greptile this".
 ---
 
 # Greptile-Style PR Review

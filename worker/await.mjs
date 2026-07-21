@@ -35,7 +35,7 @@ const CONVEX_URL = resolveConvexUrl(cfg)
 // No-op when unset; a failing or slow hook never affects the verdict. waiterPid
 // is our own pid, forwarded so a consumer can reap us if we're hard-killed
 // (SIGKILL skips the `end` edge).
-const HOOK = process.env.REVIEWLOOP_AWAIT_HOOK || process.env.PRR_AWAIT_HOOK || cfg.awaitHook
+const HOOK = process.env.REVIEWLOOP_AWAIT_HOOK || cfg.awaitHook
 let hookStarted = false
 function fireHook(...args) {
   if (!HOOK) return

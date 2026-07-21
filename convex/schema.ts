@@ -3,7 +3,7 @@ import { v } from "convex/values"
 
 // A review goes queued -> reviewing -> reviewed | failed.
 //   queued    : a webhook (or rescan) saw a PR head SHA with no review yet
-//   reviewing : the worker claimed it and `claude -p /pr-review N` is running
+//   reviewing : the worker claimed it and `claude -p /reviewloop-review N` is running
 //   reviewed  : the review was posted to GitHub (see reviewUrl)
 //   failed    : the run errored or timed out
 export const reviewStatus = v.union(
@@ -52,7 +52,7 @@ export const reviewerEffort = v.union(
 export const ruleLevel = v.union(v.literal("block"), v.literal("warn"))
 
 // ── follow-up suggestions ────────────────────────────────────────────────────
-// A `suggestedIssues` row is a *proposal* a pr-feature agent emitted at the
+// A `suggestedIssues` row is a *proposal* a reviewloop-feature agent emitted at the
 // unattended wrap-up of a PR it built — out-of-scope work it deferred, a
 // limitation it disclosed, a tangent it noticed. It is NOT a GitHub issue yet:
 // the console is the async approval inbox, and only on a human "Open" does the
@@ -116,7 +116,7 @@ export const suggestedIssueFields = {
   source: suggestionSource,
   files: v.array(v.string()), // "files to touch" the brief points a fresh agent at
   // stable idempotency key derived from (repo, sourcePrNumber, title): an agent
-  // re-run, or a second pr-feature session, collapses onto the same row instead
+  // re-run, or a second reviewloop-feature session, collapses onto the same row instead
   // of double-filing. Also embedded as a marker in the opened issue body so the
   // worker can dedup against GitHub (crash-safety between create and markOpened).
   dedupKey: v.string(),
@@ -144,12 +144,12 @@ export const suggestedIssueFields = {
 // ── autonomous solver (issue → PR) ───────────────────────────────────────────
 // A `solveTasks` row is the third half of the loop: when a GitHub issue carries
 // the `ready-for-agent` label (set by the follow-ups gate 2, or manually via the
-// triage skill), the solver worker spawns an autonomous `/pr-feature` run that
+// triage skill), the solver worker spawns an autonomous `/reviewloop-feature` run that
 // builds the feature and opens a PR (`Closes #N`). That PR is then reviewed by the
 // existing review half for free. The solver NEVER merges — a human does. Lifecycle:
 //   queued    : a webhook (`issues:labeled`) or the reconcile saw a ready-for-agent
 //               issue with no live solve yet
-//   solving   : the solver claimed it and `claude -p /pr-feature` is running
+//   solving   : the solver claimed it and `claude -p /reviewloop-feature` is running
 //   pr-opened : the run finished and the solver located the PR it opened (prNumber
 //               set) — the success terminus from the solver's point of view
 //   done      : that PR was merged by a human (stamped from the pull_request webhook
@@ -177,7 +177,7 @@ export const solveTaskFields = {
   worker: v.optional(v.string()),
   // a one-line "what the agent is doing right now", streamed during solving
   progress: v.optional(v.string()),
-  // the worker-assigned branch the pr-feature agent built on. The worker names it
+  // the worker-assigned branch the reviewloop-feature agent built on. The worker names it
   // (solve/issue-<N>-<slug>) so it can locate the opened PR by head branch after
   // the run, and clean up the local worktree/branch afterward.
   branch: v.optional(v.string()),
@@ -340,7 +340,7 @@ export default defineSchema({
     updatedAt: v.number(),
   }),
 
-  // Follow-up issue proposals from pr-feature agents — see suggestedIssueFields.
+  // Follow-up issue proposals from reviewloop-feature agents — see suggestedIssueFields.
   suggestedIssues: defineTable(suggestedIssueFields)
     // inbox (newest-first within a status) + the worker's claimable-style reads
     .index("by_status", ["status", "createdAt"])

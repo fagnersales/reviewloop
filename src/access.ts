@@ -26,14 +26,11 @@ const rawPublicUrl = import.meta.env.VITE_PUBLIC_CONSOLE_URL as string | undefin
 export const PUBLIC_CONSOLE_URL = rawPublicUrl?.trim().replace(/\/+$/, "") || undefined
 
 const STORAGE_KEY = "reviewloop.passcode"
-// Pre-rename key — read-only fallback so visitors who unlocked the console
-// before the reviewloop rename aren't asked for the passcode again.
-const LEGACY_STORAGE_KEY = "prr-console.passcode"
 const URL_PARAM = "key"
 
 export function getStoredPasscode(): string | null {
   try {
-    return localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY)
+    return localStorage.getItem(STORAGE_KEY)
   } catch {
     return null
   }

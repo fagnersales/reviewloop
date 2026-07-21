@@ -29,7 +29,7 @@ export const SOLVE_META: Record<
 
 // The "what happens next" explainer for the states that aren't self-evident.
 export const SOLVE_NOTE: Partial<Record<SolveStatus, string>> = {
-  queued: "Waiting for an available solver worker. The /pr-feature run starts once a slot frees up.",
+  queued: "Waiting for an available solver worker. The /reviewloop-feature run starts once a slot frees up.",
   "pr-opened": "The agent opened a PR and stopped — solvers never merge. A human reviews and merges it on GitHub.",
   done: "The PR was merged on GitHub, closing the issue → solve → PR lineage. Nothing more to do.",
 }

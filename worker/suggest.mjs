@@ -2,7 +2,7 @@
 // "Suggest follow-up issues" CLI: `node worker/suggest.mjs --pr <n>`
 // (installed bin: `reviewloop-suggest`).
 //
-// The producer end of the PR-follow-ups loop. A pr-feature agent, at the
+// The producer end of the PR-follow-ups loop. A reviewloop-feature agent, at the
 // *unattended* wrap-up of a PR it built, flushes its running follow-ups list here
 // instead of opening GitHub issues directly. Each proposal lands in the
 // reviewloop Convex `suggestedIssues` table as a durable proposal; the console is
@@ -41,7 +41,7 @@ Usage:
   node worker/suggest.mjs --pr <n> [options] < proposals.json
   reviewloop-suggest --pr <n> --file proposals.json
 
-Flushes a pr-feature agent's out-of-scope follow-ups into the reviewloop inbox as
+Flushes a reviewloop-feature agent's out-of-scope follow-ups into the reviewloop inbox as
 durable proposals. Nothing is filed on GitHub — a human approves which to open from
 the console, and the worker files those (exactly like reviews). Idempotent: a
 re-run collapses onto existing proposals (counted as duplicates).

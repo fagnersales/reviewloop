@@ -3,13 +3,13 @@
 //
 // The review half reviews PRs; the follow-ups half turns agent proposals into
 // `ready-for-agent` issues. This worker closes the loop: when a GitHub issue carries
-// the `ready-for-agent` label, it spawns an autonomous `claude -p "/pr-feature …"`
+// the `ready-for-agent` label, it spawns an autonomous `claude -p "/reviewloop-feature …"`
 // run that builds the feature and opens a PR (`Closes #N`). That PR is then reviewed
 // by the review half **for free**. The solver NEVER merges — a human does.
 //
 // It subscribes to the reviewloop Convex deployment over its sync websocket and
 // reacts to changes instead of polling:
-//   - solveTasks.claimable -> claim a queued solve, spawn `/pr-feature` against a
+//   - solveTasks.claimable -> claim a queued solve, spawn `/reviewloop-feature` against a
 //                             configured checkout, capture the PR it opened, report.
 //   - repos.list           -> the live watch list (owned by the dashboard). Drives
 //                             the `gh issue list --label ready-for-agent` reconcile.
@@ -27,9 +27,9 @@
 //      long solve from starving the fast, cheap reviews.
 //
 // The elegance: the solver does NOT reimplement build/review/fix. The global
-// `pr-feature` skill already does all of it (worktree -> build -> open PR ->
+// `reviewloop-feature` skill already does all of it (worktree -> build -> open PR ->
 // reviewloop-await loop -> auto-fix -> stop clean). The solver just: find a ready-for-agent
-// issue -> claim -> spawn pr-feature in the right folder -> track status -> clean up.
+// issue -> claim -> spawn reviewloop-feature in the right folder -> track status -> clean up.
 
 import { ConvexClient } from "convex/browser"
 import { api } from "../convex/_generated/api.js"
@@ -74,7 +74,7 @@ function loadConfig() {
     )
   }
   // Env override for the checkout registry (JSON map), e.g. for CI/host injection.
-  const checkoutsEnv = process.env.REVIEWLOOP_SOLVER_CHECKOUTS || process.env.PRR_SOLVER_CHECKOUTS
+  const checkoutsEnv = process.env.REVIEWLOOP_SOLVER_CHECKOUTS
   if (checkoutsEnv) {
     try {
       cfg.checkouts = { ...cfg.checkouts, ...JSON.parse(checkoutsEnv) }
@@ -220,7 +220,7 @@ async function validateAllCheckouts() {
   }
 }
 
-// ── branch naming + the pr-feature brief ─────────────────────────────────────
+// ── branch naming + the reviewloop-feature brief ─────────────────────────────────────
 // A git-ref-safe, length-clamped slug of an issue title.
 function slug(s) {
   return (s || "")
@@ -240,12 +240,12 @@ function branchFor(issueNumber, title) {
   return `solve/issue-${issueNumber}${s ? `-${s}` : ""}`
 }
 
-// The prompt handed to `/pr-feature`. Self-contained: the issue context, the
+// The prompt handed to `/reviewloop-feature`. Self-contained: the issue context, the
 // solver-specific overrides (exact branch name, Closes #N, the fix-round cap, the
-// never-merge rule), and the unattended framing. `pr-feature` is a global skill, so
-// `claude -p "/pr-feature …"` resolves it on this host.
+// never-merge rule), and the unattended framing. `reviewloop-feature` is a global skill, so
+// `claude -p "/reviewloop-feature …"` resolves it on this host.
 function solvePrompt(row, branch, issueBody, maxFixRounds) {
-  return `/pr-feature Solve issue #${row.issueNumber} in ${row.repo} and open a PR for it.
+  return `/reviewloop-feature Solve issue #${row.issueNumber} in ${row.repo} and open a PR for it.
 
 You are running UNATTENDED (no human is watching this turn) as the reviewloop
 autonomous solver. Build the change the issue asks for, open a PR that closes the
@@ -329,7 +329,7 @@ async function commentStall(repo, issueNumber, body) {
   await run("gh", ["issue", "comment", String(issueNumber), "--repo", repo, "--body", body])
 }
 
-// The heart: spawn `/pr-feature` against the configured checkout for this repo.
+// The heart: spawn `/reviewloop-feature` against the configured checkout for this repo.
 async function runSolve(row) {
   const co = checkoutFor(row.repo)
   if (!co) {
@@ -428,7 +428,7 @@ async function runSolve(row) {
   }
 }
 
-// Spawn `claude -p "/pr-feature …"` in the checkout, stream a live "what it's doing"
+// Spawn `claude -p "/reviewloop-feature …"` in the checkout, stream a live "what it's doing"
 // line to the dashboard, enforce the solve timeout. Returns true on a clean exit.
 async function spawnPrFeature(row, cwd, prompt, logFile) {
   const args = [
@@ -442,18 +442,14 @@ async function spawnPrFeature(row, cwd, prompt, logFile) {
     "stream-json",
     "--verbose",
   ]
-  // REVIEWLOOP_UNATTENDED=1 is the spawn contract: it tells pr-feature it's headless, so it
+  // REVIEWLOOP_UNATTENDED=1 is the spawn contract: it tells reviewloop-feature it's headless, so it
   // flushes follow-ups via reviewloop-suggest without waiting for a human and skips
   // human-facing chatter. REVIEWLOOP_MAX_FIX_ROUNDS forwards the cap (the prompt also states
   // it, which is authoritative).
-  // The PRR_* pair is the pre-rename spelling of the same contract — kept until
-  // the external pr-feature skill reads the REVIEWLOOP_* names.
   const env = {
     ...process.env,
     REVIEWLOOP_UNATTENDED: "1",
     REVIEWLOOP_MAX_FIX_ROUNDS: String(cfg.maxFixRounds),
-    PRR_UNATTENDED: "1",
-    PRR_MAX_FIX_ROUNDS: String(cfg.maxFixRounds),
   }
   const r = await streamClaude({
     claudeBin: CLAUDE_BIN,
