@@ -49,7 +49,14 @@ decide what to do next. **Branch on the exit code, not the JSON `status`:** on
 `--timeout` the `status` is the last-known state (e.g. `"reviewing"`), not
 `"timeout"` — only exit `124` signals the give-up; likewise, if a PR is closed
 while its review is still `queued`, the row is removed and `await` blocks until
-`--timeout` (exit `124`) rather than exiting early. `--head <sha>` and `--repo`
+`--timeout` (exit `124`) rather than exiting early. The same applies when a new
+push lands while a review is in flight: the old pass is **superseded** — its
+run is stopped, and if no review had posted yet its row is deleted, so an
+`await` still keyed to the old head blocks until `--timeout`. (If the review
+*had* already posted, the pass is kept and that `await` resolves normally.)
+If you pushed again, just re-run `await` (it resolves the new head from `gh`);
+self-heal also refuses to enqueue a head that is no longer the PR's current
+head. `--head <sha>` and `--repo`
 are auto-resolved from `gh` when omitted; `--timeout <seconds>` defaults to 1800.
 
 ## Acknowledging a review you pick up (for Claude Code)

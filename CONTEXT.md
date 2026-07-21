@@ -11,6 +11,17 @@ one crystallizes).
   `convex/prStatus.ts` (preferred = a reviewed row beats a newer failed retry
   of the same SHA).
 
+- **Superseded pass** — a pass whose head SHA stopped being the PR's head
+  before its review finished: a new push enqueues the new head and *supersedes*
+  the older live passes (`doEnqueue` in `convex/reviews.ts`). A still-queued
+  stale pass is deleted outright; a `reviewing` one is stamped `supersededAt`
+  and the worker's `superseded` subscription kills that run's `claude` child —
+  so a PR never shows two live reviews. The row's fate turns on whether the
+  review landed: stopped before posting → `discardSuperseded` deletes it;
+  review already on GitHub → finished as `reviewed` and kept (a posted review
+  stays on the dashboard). If the holding worker is dead, `requeueStale`
+  discards (never requeues) it.
+
 - **PR status (`statusKey`)** — the 8-state lifecycle a PR resolves to
   (`verified · awaiting · inprogress · reviewing · queued · failed · merged ·
   closed`), computed server-side by `statusKey` in `convex/prStatus.ts` and

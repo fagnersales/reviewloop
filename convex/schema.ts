@@ -228,6 +228,17 @@ export const reviewFields = {
   closedAt: v.optional(v.number()),
   // PR lifecycle once GitHub closes it: merged, or closed-without-merging
   prState: v.optional(v.union(v.literal("merged"), v.literal("closed"))),
+  // Set when a newer head SHA of the same PR was enqueued while this pass was
+  // still `reviewing`: the review under way is of a commit that is no longer
+  // the PR's head, so its outcome can only mislead. Enqueue stamps it; the
+  // worker sees it (reviews.superseded) and kills the in-flight `claude` run.
+  // What happens to the row turns on whether the review landed: stopped before
+  // posting -> deleted (reviews.discardSuperseded); review already posted ->
+  // finished as `reviewed` and kept — a posted review stays on the dashboard.
+  // A still-`queued` stale pass is deleted outright by enqueue instead — this
+  // field only ever marks a running one. If the worker died before cancelling,
+  // requeueStale deletes the row rather than requeuing it.
+  supersededAt: v.optional(v.number()),
   // A fix agent's acknowledgement that it has picked up THIS review pass and is
   // working on the findings (stamped by `reviews.ack` / the `reviewloop-ack` CLI). It's
   // the difference the console can't otherwise know: a `reviewed` row with no ack

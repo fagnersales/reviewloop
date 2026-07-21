@@ -110,6 +110,16 @@ const activeClones = new Set()
 const shutdownController = new AbortController()
 let latestClaimable = []
 
+// One AbortController per in-flight run, by review row id — aborting one
+// SIGTERMs that run's `claude` child. shutdown() aborts them all; the
+// `superseded` subscription aborts a single run whose head SHA a newer push
+// replaced mid-review (its post-run path then discards the row).
+const runControllers = new Map()
+// Row ids currently marked superseded (reviews.superseded), kept as a set so a
+// supersede that lands between winning a claim and registering the run's
+// controller is still caught at spawn time.
+let supersededIds = new Set()
+
 // Suggested-issue rows the worker is mid-side-effect on (creating the GitHub
 // issue, or syncing its label), by row id — so a re-fired subscription doesn't
 // double-process one. Cheap gh calls, so no concurrency cap is needed.
@@ -282,18 +292,42 @@ async function claimAndRun(row) {
   claiming.delete(id)
   if (!won) return
   inflight.add(id)
+  const controller = new AbortController()
+  runControllers.set(id, controller)
+  if (supersededIds.has(id) || shutdownController.signal.aborted) controller.abort()
   // Capture this push's commits alongside the review (don't block it on GitHub).
   captureCommits(row).catch((e) => log(`captureCommits error #${row.prNumber}:`, String(e)))
-  runReview(row).finally(() => {
+  runReview(row, controller.signal).finally(() => {
+    runControllers.delete(id)
     inflight.delete(id)
     pump()
   })
 }
 
+// A newer push replaced this pass's head and the run was stopped before its
+// review posted: report that upstream, which deletes the row (and its log) so
+// the board shows only the live pass. Only review-less runs land here — one
+// whose review made it to GitHub is finished and kept instead (see the
+// supersede branch in reviewClone).
+async function discardSuperseded(row) {
+  try {
+    await client.mutation(api.reviews.discardSuperseded, { id: row._id })
+  } catch (e) {
+    log(`discardSuperseded error #${row.prNumber}:`, String(e))
+  }
+}
+
 // Clone the PR's repo into a throwaway dir, review it there, then delete the dir.
 // The clone — not a configured workdir — is the only code-on-disk a review needs.
-async function runReview(row) {
+async function runReview(row, signal) {
   const short = row.headSha.slice(0, 7)
+  // Superseded before we even spawned (the claim raced a new push) — skip the
+  // clone entirely and drop the pass.
+  if (signal.aborted && !shutdownController.signal.aborted) {
+    log(`✂ superseded #${row.prNumber} @${short} before start — discarding pass`)
+    await discardSuperseded(row)
+    return
+  }
   const cloneDir = mkdtempSync(join(CLONE_BASE, CLONE_PREFIX))
   activeClones.add(cloneDir)
   try {
@@ -304,7 +338,7 @@ async function runReview(row) {
       await finish(row, false, { error: `clone failed: ${cloned.error}` })
       return
     }
-    await reviewClone(row, short, cloneDir)
+    await reviewClone(row, short, cloneDir, signal)
   } finally {
     activeClones.delete(cloneDir)
     try {
@@ -315,8 +349,11 @@ async function runReview(row) {
   }
 }
 
-async function reviewClone(row, short, cloneDir) {
+async function reviewClone(row, short, cloneDir, signal) {
   const logFile = join(LOG_DIR, `pr-${row.prNumber}-${short}.log`)
+  // Local wall-clock start of this run — the "was that review ours?" boundary
+  // for the superseded-but-posted check below.
+  const startedAt = Date.now()
   // The console picker (settings.get subscription) wins once a human has picked;
   // until then, config.json's model and the CLI's own default effort apply.
   const model = reviewerSettings?.model ?? cfg.model
@@ -344,13 +381,53 @@ async function reviewClone(row, short, cloneDir) {
     cwd: cloneDir,
     logFile,
     timeoutMs: cfg.reviewTimeoutMin * 60 * 1000,
-    signal: shutdownController.signal,
+    signal,
     onTimeout: () => log(`⏱ timeout #${row.prNumber} after ${cfg.reviewTimeoutMin}m — killing`),
     onProgress: (line) =>
       client.mutation(api.reviews.updateProgress, { id: row._id, line }).catch(() => {}),
   })
   const { code, resultIsError, lastFullText } = r
   const finalText = r.spawnError ? `${r.finalText}\n[spawn error] ${r.spawnError}` : r.finalText
+
+  // A newer push superseded this head mid-run. Whether the pass survives turns
+  // on one thing: did the review land? A pass is discarded only when it was
+  // stopped before posting anything; a posted review is history the dashboard
+  // keeps, so that pass is finished normally instead. Three cases:
+  //   - exited cleanly before the kill won the race -> fall through, normal finish
+  //   - killed, but a review posted since we started (SIGTERM caught the agent
+  //     mid-closing-summary, after `gh` posted) -> finish as reviewed with it
+  //   - killed with nothing posted -> discard the pass
+  // (Shutdown aborts land here too but exit the process before this matters.)
+  if (signal.aborted && !shutdownController.signal.aborted) {
+    const completed = code === 0 && !resultIsError
+    if (!completed) {
+      const postedUrl = await reviewPostedSince(row.repo, row.prNumber, startedAt)
+      if (!postedUrl) {
+        log(`✂ superseded #${row.prNumber} @${short} — run stopped, pass discarded`)
+        await discardSuperseded(row)
+        return
+      }
+      log(`✂ superseded #${row.prNumber} @${short} — run stopped, but its review had posted; keeping the pass`)
+      const reportText = finalText || lastFullText
+      const parsed = parseReport(reportText)
+      await client
+        .mutation(api.reviews.updateProgress, {
+          id: row._id,
+          line: "Review posted (run superseded during wrap-up)",
+          kind: "done",
+        })
+        .catch(() => {})
+      await finish(row, true, {
+        reviewUrl: postedUrl,
+        report: reportText.slice(-4000),
+        ...parsed,
+        model,
+        effort,
+      })
+      return
+    }
+    log(`✂ supersede for #${row.prNumber} @${short} arrived after the run finished — keeping the pass`)
+  }
 
   const reviewUrl = await latestReviewUrl(row.repo, row.prNumber, row.headSha)
   const reportText = finalText || lastFullText
@@ -396,6 +473,27 @@ async function finish(row, ok, fields) {
     await client.mutation(api.reviews.finish, { id: row._id, ok, ...clean(fields) })
   } catch (e) {
     log(`finish error #${row.prNumber}:`, String(e))
+  }
+}
+
+// A GitHub review on this PR submitted after `sinceMs` -> its html_url, else
+// undefined. Used by the supersede path to ask "did the killed run post its
+// review first?" — with supersede in place at most one run reviews a PR at a
+// time, so any review newer than our start is ours. Timestamp, not commit_id:
+// GitHub stamps a review with the PR head at submission, which is already the
+// *new* SHA when a push raced in. The 5s slack absorbs worker/GitHub clock
+// skew but stays well under the enqueue->claim->spawn gap that separates this
+// run's start from the previous pass's review.
+async function reviewPostedSince(repo, prNumber, sinceMs) {
+  const { code, out } = await run("gh", ["api", `repos/${repo}/pulls/${prNumber}/reviews`])
+  if (code !== 0) return undefined
+  try {
+    const arr = JSON.parse(out)
+    if (!Array.isArray(arr)) return undefined
+    const ours = arr.filter((r) => Date.parse(r.submitted_at ?? "") >= sinceMs - 5000)
+    return ours.length ? ours[ours.length - 1]?.html_url : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -818,6 +916,20 @@ client.onUpdate(api.reviews.claimable, {}, (rows) => {
   pump()
 })
 
+// Reviewing passes a newer push has superseded. Abort the matching in-flight
+// run — its post-run path discards the row. Rows we don't hold belong to
+// another (possibly dead) worker; requeueStale cleans those up server-side.
+client.onUpdate(api.reviews.superseded, {}, (rows) => {
+  supersededIds = new Set(rows.map((r) => r._id))
+  for (const row of rows) {
+    const controller = runControllers.get(row._id)
+    if (controller && !controller.signal.aborted) {
+      log(`✂ new push on ${row.repo}#${row.prNumber} — stopping review of @${row.headSha.slice(0, 7)}`)
+      controller.abort()
+    }
+  }
+})
+
 // Human-requested merges to execute on GitHub. The in-flight guard means a re-fire
 // while one is mid-merge is a no-op.
 client.onUpdate(api.reviews.pendingMerges, {}, (rows) => {
@@ -893,10 +1005,13 @@ if (cfg.fallbackReconcileMin > 0) {
 
 async function shutdown() {
   log("shutting down")
-  // Kill in-flight `claude` children (via the spawn signal) and remove their
-  // clone dirs — their rows stay `reviewing` and the stale-review cron requeues
-  // them, but the dirs would otherwise leak past this process's lifetime.
+  // Kill in-flight `claude` children (via each run's spawn signal) and remove
+  // their clone dirs — their rows stay `reviewing` and the stale-review cron
+  // requeues them, but the dirs would otherwise leak past this process's
+  // lifetime. shutdownController is aborted first so the runs' post-abort
+  // checks read this as a shutdown, not a supersede.
   shutdownController.abort()
+  for (const controller of runControllers.values()) controller.abort()
   for (const dir of activeClones) {
     try {
       rmSync(dir, { recursive: true, force: true })

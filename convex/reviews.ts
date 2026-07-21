@@ -91,14 +91,34 @@ async function doEnqueue(
   const watched = await ctx.db.query("watchedRepos").take(MAX_WATCHED_REPOS)
   if (!watched.some((r) => r.repo.toLowerCase() === target)) return "unwatched"
 
-  const existing = await ctx.db
+  const prRows = await ctx.db
     .query("reviews")
-    .withIndex("by_pr_sha", (q) =>
-      q.eq("repo", a.repo).eq("prNumber", a.prNumber).eq("headSha", a.headSha),
-    )
+    .withIndex("by_pr_sha", (q) => q.eq("repo", a.repo).eq("prNumber", a.prNumber))
     .collect()
+  const existing = prRows.filter((r) => r.headSha === a.headSha)
   // a prior failed run may be retried; anything else for this SHA means "done"
   if (existing.some((r) => r.status !== "failed")) return "duplicate"
+
+  // A new head SHA supersedes the PR's older live passes — reviewing a commit
+  // that is no longer the head can only mislead (and two "Agent is reviewing"
+  // entries on one PR is exactly the bug this prevents). A still-queued stale
+  // pass is deleted outright (it never ran; mirrors applyPrState's queued-row
+  // drop on close). A reviewing one is stamped `supersededAt`: the worker's
+  // `superseded` subscription kills that run and discards the row. Every caller
+  // funnels here with the PR's current head — the webhook and reconcile by
+  // construction, await's self-heal via its own head-moved guard — so a stale
+  // out-of-order delivery superseding the *newer* pass is a non-issue in
+  // practice, and the reconcile would re-enqueue the true head anyway.
+  for (const r of prRows) {
+    if (r.headSha === a.headSha) continue
+    if (r.status === "queued") {
+      await clearReviewLog(ctx, r._id)
+      await ctx.db.delete(r._id)
+    } else if (r.status === "reviewing" && r.supersededAt == null) {
+      await ctx.db.patch(r._id, { supersededAt: Date.now() })
+    }
+  }
+
   await ctx.db.insert("reviews", {
     ...a,
     status: "queued",
@@ -538,7 +558,42 @@ export const priorHead = query({
   },
 })
 
-// Cron-driven crash recovery: a "reviewing" row whose worker died gets requeued.
+// The worker subscribes to this: reviewing passes a newer push has superseded
+// (doEnqueue stamped supersededAt). The worker holding one kills its in-flight
+// `claude` run and calls discardSuperseded; rows held by a dead worker are
+// cleaned up by requeueStale instead.
+export const superseded = query({
+  args: {},
+  returns: v.array(reviewDoc),
+  handler: async (ctx) => {
+    const reviewing = await ctx.db
+      .query("reviews")
+      .withIndex("by_status", (q) => q.eq("status", "reviewing"))
+      .take(25)
+    return reviewing.filter((r) => r.supersededAt != null)
+  },
+})
+
+// Worker reports it stopped a superseded run before its review posted: drop
+// the pass and its log — there is no review to show for it. A pass whose
+// review DID land is never dropped: the worker finishes it normally instead
+// (a posted review is history the dashboard keeps), and the status guard here
+// makes that safe even against a stray/raced discard call.
+export const discardSuperseded = mutation({
+  args: { id: v.id("reviews") },
+  returns: v.null(),
+  handler: async (ctx, { id }) => {
+    const row = await ctx.db.get(id)
+    if (!row || row.supersededAt == null || row.status !== "reviewing") return null
+    await clearReviewLog(ctx, id)
+    await ctx.db.delete(id)
+    return null
+  },
+})
+
+// Cron-driven crash recovery: a "reviewing" row whose worker died gets requeued
+// — unless a newer push superseded it, in which case rerunning would review a
+// stale head; those are discarded exactly as the worker would have.
 export const requeueStale = internalMutation({
   args: {},
   returns: v.number(),
@@ -551,6 +606,11 @@ export const requeueStale = internalMutation({
     let requeued = 0
     for (const r of reviewing) {
       if (now - (r.startedAt ?? r.queuedAt) > STALE_MS) {
+        if (r.supersededAt != null) {
+          await clearReviewLog(ctx, r._id)
+          await ctx.db.delete(r._id)
+          continue
+        }
         // Drop the crashed attempt's log so the retry's lines don't concatenate
         // onto it under the shared reviewId.
         await clearReviewLog(ctx, r._id)

@@ -278,7 +278,7 @@ async function selfHeal() {
 
   const meta = await ghJson([
     "pr", "view", String(prNumber), "--repo", repo,
-    "--json", "title,author,url,createdAt,state,isDraft",
+    "--json", "title,author,url,createdAt,state,isDraft,headRefOid",
   ])
 
   // Gate the enqueue on the PR's lifecycle before doing it. A self-heal enqueue
@@ -307,6 +307,20 @@ async function selfHeal() {
       `reviewloop await: no row for ${short} after 60s, but ${repo}#${prNumber} is ` +
         `${meta.isDraft ? "a draft" : String(meta.state).toLowerCase()} — ` +
         `not self-healing (drafts/closed PRs aren't reviewed). Waiting until --timeout\n`,
+    )
+    return
+  }
+  // Head moved on: the PR's current head is no longer the SHA we're waiting on
+  // (a newer push landed in the meantime). Our SHA will never be reviewed, and
+  // enqueuing it would be worse than useless — enqueue supersedes the PR's
+  // older live passes, so a stale self-heal could cancel the *current* head's
+  // review. Keep waiting like the other never-coming cases; the caller should
+  // re-await the new head.
+  if (meta.headRefOid && meta.headRefOid !== headSha) {
+    process.stderr.write(
+      `reviewloop await: no row for ${short} after 60s, but ${repo}#${prNumber}'s head is now ` +
+        `${String(meta.headRefOid).slice(0, 7)} — not self-healing a superseded push. ` +
+        `Re-run await for the new head. Waiting until --timeout\n`,
     )
     return
   }
