@@ -31,11 +31,12 @@ export const list = query({
       text: v.string(),
       level: ruleLevel,
       repo: v.optional(v.string()),
+      updatedAt: v.number(),
     }),
   ),
   handler: async (ctx) => {
     const rows = await ctx.db.query("reviewRules").take(MAX_RULES)
-    return rows.map((r) => ({ id: r._id, text: r.text, level: r.level, repo: r.repo }))
+    return rows.map((r) => ({ id: r._id, text: r.text, level: r.level, repo: r.repo, updatedAt: r.updatedAt }))
   },
 })
 
@@ -68,6 +69,32 @@ export const add = mutation({
     if (rows.length >= MAX_RULES) return "full"
     await ctx.db.insert("reviewRules", { text: rule, level, repo: scope, updatedAt: Date.now() })
     return "added"
+  },
+})
+
+export const setText = mutation({
+  args: { id: v.id("reviewRules"), text: v.string() },
+  returns: v.union(v.literal("updated"), v.literal("exists"), v.literal("invalid")),
+  handler: async (ctx, { id, text }) => {
+    const rule = text.trim()
+    if (!rule || rule.length > MAX_RULE_LENGTH) return "invalid"
+    // Tolerate a stale id (rule deleted from another tab): report "updated" and
+    // let the live list drop the row.
+    const row = await ctx.db.get(id)
+    if (!row) return "updated"
+    // Same per-scope dedup as `add`, excluding the rule being edited.
+    const rows = await ctx.db.query("reviewRules").take(MAX_RULES)
+    const target = rule.toLowerCase()
+    const scope = row.repo?.toLowerCase() ?? null
+    if (
+      rows.some(
+        (r) =>
+          r._id !== id && r.text.toLowerCase() === target && (r.repo?.toLowerCase() ?? null) === scope,
+      )
+    )
+      return "exists"
+    await ctx.db.patch(id, { text: rule, updatedAt: Date.now() })
+    return "updated"
   },
 })
 
