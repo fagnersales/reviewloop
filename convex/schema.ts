@@ -278,7 +278,11 @@ export default defineSchema({
     .index("by_status", ["status", "queuedAt"])
     // dedup key: one review per (repo, PR, head SHA). A prefix lookup on
     // (repo, prNumber) finds every SHA of a PR (used by closePr).
-    .index("by_pr_sha", ["repo", "prNumber", "headSha"]),
+    .index("by_pr_sha", ["repo", "prNumber", "headSha"])
+    // rows the console still thinks are alive (prState unset). The reconcile
+    // self-heal reads these to catch PRs merged/closed while their webhook was
+    // dropped — a prefix on repo + eq(prState, undefined) is the whole scan.
+    .index("by_repo_prState", ["repo", "prState"]),
 
   // The cloud-review session's progress log, one row per appended line. Lives in
   // its own table (not an array on the review row) so it grows without rewriting

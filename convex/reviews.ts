@@ -132,6 +132,36 @@ export const enqueueMissing = mutation({
 // PR lifecycle from GitHub. "merged"/"closed" stamp every review row for the PR
 // (and drop any still-queued one — no point reviewing a closed PR); "open"
 // (reopened) clears the stamp.
+// Stamp every pass of a PR with its GitHub lifecycle state. Shared by the
+// `pull_request` webhook (internal.reviews.setPrState) and the worker's
+// reconcile self-heal (reviews.markPrState) so a dropped close webhook lands
+// the exact same state a delivered one would have.
+async function applyPrState(
+  ctx: { db: MutationCtx["db"] },
+  {
+    repo,
+    prNumber,
+    state,
+    at,
+  }: { repo: string; prNumber: number; state: "merged" | "closed" | "open"; at?: number },
+) {
+  const rows = await ctx.db
+    .query("reviews")
+    .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
+    .collect()
+  for (const r of rows) {
+    if (state !== "open" && r.status === "queued") {
+      await ctx.db.delete(r._id)
+      continue
+    }
+    await ctx.db.patch(r._id, {
+      prState: state === "open" ? undefined : state,
+      // stamp the close moment; a reopen wipes it so "open for…" resumes
+      closedAt: state === "open" ? undefined : at,
+    })
+  }
+}
+
 export const setPrState = internalMutation({
   args: {
     repo: v.string(),
@@ -142,22 +172,41 @@ export const setPrState = internalMutation({
     at: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { repo, prNumber, state, at }) => {
+  handler: async (ctx, args) => {
+    await applyPrState(ctx, args)
+    return null
+  },
+})
+
+// Distinct PR numbers this console still thinks are alive (no stored prState)
+// for a repo. The worker cross-checks these against GitHub's open list: any it
+// finds NOT open was merged/closed while its webhook was dropped, and gets
+// reconciled via `markPrState`.
+export const livePrNumbers = query({
+  args: { repo: v.string() },
+  returns: v.array(v.number()),
+  handler: async (ctx, { repo }) => {
     const rows = await ctx.db
       .query("reviews")
-      .withIndex("by_pr_sha", (q) => q.eq("repo", repo).eq("prNumber", prNumber))
+      .withIndex("by_repo_prState", (q) => q.eq("repo", repo).eq("prState", undefined))
       .collect()
-    for (const r of rows) {
-      if (state !== "open" && r.status === "queued") {
-        await ctx.db.delete(r._id)
-        continue
-      }
-      await ctx.db.patch(r._id, {
-        prState: state === "open" ? undefined : state,
-        // stamp the close moment; a reopen wipes it so "open for…" resumes
-        closedAt: state === "open" ? undefined : at,
-      })
-    }
+    return [...new Set(rows.map((r) => r.prNumber))].sort((a, b) => a - b)
+  },
+})
+
+// Worker-facing reconcile of a dropped close webhook: same effect as the
+// webhook's setPrState, exposed publicly for the worker (which holds no deploy
+// key — it calls the public api surface, like enqueueMissing/claim/finish).
+export const markPrState = mutation({
+  args: {
+    repo: v.string(),
+    prNumber: v.number(),
+    state: v.union(v.literal("merged"), v.literal("closed")),
+    at: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await applyPrState(ctx, args)
     return null
   },
 })

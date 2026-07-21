@@ -571,7 +571,54 @@ async function reconcile(reason) {
         log(`enqueue error ${repo}#${pr.number}:`, String(e))
       }
     }
-    log(`reconcile ${repo} (${reason}): ${prs.length} open, ${enqueued} newly queued`)
+
+    // Self-heal dropped *close* webhooks: any PR the console still thinks is
+    // alive but GitHub no longer lists as open was merged/closed while its
+    // `closed` delivery was lost. Stamp the real state so it stops showing
+    // VERIFIED forever. (Mirrors the enqueueMissing self-heal for dropped
+    // `synchronize` deliveries, on the other side of the lifecycle.)
+    const openSet = new Set(prs.map((p) => p.number))
+    let healed = 0
+    try {
+      const live = await client.query(api.reviews.livePrNumbers, { repo })
+      for (const prNumber of live) {
+        if (openSet.has(prNumber)) continue
+        const { code: vc, out: vout } = await run("gh", [
+          "pr",
+          "view",
+          String(prNumber),
+          "--repo",
+          repo,
+          "--json",
+          "state,mergedAt,closedAt",
+        ])
+        if (vc !== 0) continue
+        let info
+        try {
+          info = JSON.parse(vout)
+        } catch {
+          continue
+        }
+        // OPEN here means the open-list fetch simply raced a just-opened PR —
+        // leave it for a delivered webhook / the next tick.
+        const state = info.state === "MERGED" ? "merged" : info.state === "CLOSED" ? "closed" : null
+        if (!state) continue
+        const stamp = Date.parse((state === "merged" ? info.mergedAt : info.closedAt) ?? "")
+        await client.mutation(api.reviews.markPrState, {
+          repo,
+          prNumber,
+          state,
+          at: Number.isNaN(stamp) ? undefined : stamp,
+        })
+        healed++
+      }
+    } catch (e) {
+      log(`reconcile ${repo} close-heal error:`, String(e))
+    }
+    log(
+      `reconcile ${repo} (${reason}): ${prs.length} open, ${enqueued} newly queued` +
+        (healed ? `, ${healed} close-healed` : ""),
+    )
   }
 }
 
