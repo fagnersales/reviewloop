@@ -16,3 +16,4 @@ worker/logs/
 .claude/worktrees/
 .playwright-mcp/
 .vercel
+worker.log

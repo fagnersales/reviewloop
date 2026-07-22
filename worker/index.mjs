@@ -55,6 +55,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const cfg = loadConfig()
 const CONVEX_URL = resolveConvexUrl(cfg)
 const CLAUDE_BIN = process.env.CLAUDE_BIN || cfg.claudeBin || "claude"
+// Model for the house-rules composer's rewrite/shorten transforms — a one-line
+// rewrite wants speed, not the review model, so this defaults to a fast tier
+// independent of the reviewer picker.
+const DRAFT_MODEL = process.env.REVIEWLOOP_DRAFT_MODEL || cfg.draftModel || "haiku"
 const WORKER = hostname()
 const LOG_DIR = join(__dirname, "logs")
 mkdirSync(LOG_DIR, { recursive: true })
@@ -128,6 +132,10 @@ const processingSuggestions = new Set()
 // Review rows we're mid-merge on, by row id — so a re-fired pendingMerges
 // subscription doesn't fire a second `gh pr merge` for the same PR.
 const processingMerges = new Set()
+
+// House-rule draft transforms (rewrite/shorten) we're mid-run on, by row id — so
+// a re-fired ruleDrafts.claimable subscription doesn't spawn a second `claude`.
+const processingDrafts = new Set()
 
 // The dashboard-owned watch list, kept live via repos.list (see subscriptions).
 // Drives the `gh` reconcile; the queue itself decides what actually gets reviewed.
@@ -910,6 +918,74 @@ async function doMerge(row) {
   }
 }
 
+// ── house-rule draft transforms (the composer's rewrite/shorten buttons) ─────
+// Convex can't spawn `claude`, so the composer queues a one-shot text transform
+// (ruleDrafts) and this worker — which holds the CLI — runs it and writes the new
+// text back. A pure text rewrite: no clone, no tools, just a prompt in and one
+// clean line out.
+const DRAFT_INSTRUCTION = {
+  rewrite:
+    "Rewrite the house rule below to be more concise and direct while preserving its exact meaning, scope, and any specific names, values, or examples it mentions.",
+  shorten:
+    "Shorten the house rule below to the fewest words that still preserve its meaning, scope, and any specific names, values, or examples it mentions.",
+}
+
+function draftPrompt(mode, input) {
+  return `You are editing a single house rule for an automated code reviewer. ${DRAFT_INSTRUCTION[mode]}
+
+Output ONLY the resulting rule as one line of plain text — no markdown, no surrounding quotes, no bullet, no label, no preamble, and no trailing commentary.
+
+Rule:
+${input}`
+}
+
+// Collapse the model's answer to the single clean line the composer expects:
+// strip a wrapping pair of quotes it may have added, and flatten any whitespace.
+function cleanDraft(text) {
+  let s = (text || "").trim()
+  const first = s[0]
+  if (s.length >= 2 && (first === '"' || first === "'") && s.at(-1) === first) {
+    s = s.slice(1, -1).trim()
+  }
+  return s.replace(/\s+/g, " ").trim()
+}
+
+async function processDraft(row) {
+  const id = row.id
+  if (processingDrafts.has(id)) return
+  processingDrafts.add(id)
+  try {
+    let won = false
+    try {
+      won = await client.mutation(api.ruleDrafts.claim, { id, worker: WORKER })
+    } catch (e) {
+      log(`draft claim error:`, String(e))
+    }
+    if (!won) return
+    log(`✎ ${row.mode} house-rule draft (${row.input.length} chars) [${DRAFT_MODEL}]`)
+    const { code, out, err } = await run(
+      CLAUDE_BIN,
+      ["-p", draftPrompt(row.mode, row.input), "--output-format", "text", "--model", DRAFT_MODEL],
+      { timeout: 90_000 },
+    )
+    const output = cleanDraft(out)
+    if (code === 0 && output) {
+      log(`✓ ${row.mode} draft → ${output.length} chars`)
+      await client
+        .mutation(api.ruleDrafts.finish, { id, ok: true, output })
+        .catch((e) => log(`draft finish error:`, String(e)))
+    } else {
+      const reason = code === 0 ? "produced no text" : errorReason(err, `claude exited ${code}`)
+      log(`✗ ${row.mode} draft failed: ${reason}`)
+      await client
+        .mutation(api.ruleDrafts.finish, { id, ok: false, error: reason })
+        .catch((e) => log(`draft finish error:`, String(e)))
+    }
+  } finally {
+    processingDrafts.delete(id)
+  }
+}
+
 // ── subscriptions ────────────────────────────────────────────────────────────
 client.onUpdate(api.reviews.claimable, {}, (rows) => {
   latestClaimable = rows
@@ -949,6 +1025,14 @@ client.onUpdate(api.suggestedIssues.approvedToOpen, {}, (rows) => {
 client.onUpdate(api.suggestedIssues.labelToSync, {}, (rows) => {
   for (const row of rows) {
     syncSuggestedLabel(row).catch((e) => log(`syncSuggestedLabel error #${row.sourcePrNumber}:`, String(e)))
+  }
+})
+
+// The house-rules composer's rewrite/shorten requests. The in-flight guard means
+// a re-fire while one is mid-run is a no-op.
+client.onUpdate(api.ruleDrafts.claimable, {}, (rows) => {
+  for (const row of rows) {
+    processDraft(row).catch((e) => log(`processDraft error:`, String(e)))
   }
 })
 

@@ -51,6 +51,23 @@ export const reviewerEffort = v.union(
 //   warn  : violations are posted at P2 — noted, never blocking
 export const ruleLevel = v.union(v.literal("block"), v.literal("warn"))
 
+// ── house-rule draft transforms (the composer's rewrite / shorten buttons) ──
+// A one-shot text transform the console queues and the worker runs through the
+// `claude` CLI (Convex can't spawn it) — exactly the reviews/solves intent-queue
+// idiom, in miniature: "rewrite" makes a rule more concise, "shorten" cuts it
+// further, both to a single plain line. See convex/ruleDrafts.ts.
+//   queued  : the composer requested a transform, awaiting the worker
+//   running : the worker claimed it and `claude -p` is producing the new text
+//   done    : output is ready (the composer drops it into the draft, then discards)
+//   failed  : the run errored or produced nothing (error holds the reason)
+export const ruleDraftMode = v.union(v.literal("rewrite"), v.literal("shorten"))
+export const ruleDraftStatus = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("done"),
+  v.literal("failed"),
+)
+
 // ── follow-up suggestions ────────────────────────────────────────────────────
 // A `suggestedIssues` row is a *proposal* a reviewloop-feature agent emitted at the
 // unattended wrap-up of a PR it built — out-of-scope work it deferred, a
@@ -354,6 +371,20 @@ export default defineSchema({
     repo: v.optional(v.string()),
     updatedAt: v.number(),
   }),
+
+  // One-shot rewrite/shorten jobs for the house-rules composer — see
+  // convex/ruleDrafts.ts. Ephemeral and self-bounding: the composer discards its
+  // own row once it consumes the output, and `request` prunes any stale row, so
+  // the table stays small without a cleanup cron.
+  ruleDrafts: defineTable({
+    input: v.string(),
+    mode: ruleDraftMode,
+    status: ruleDraftStatus,
+    output: v.optional(v.string()),
+    error: v.optional(v.string()),
+    worker: v.optional(v.string()),
+    createdAt: v.number(),
+  }).index("by_status", ["status", "createdAt"]),
 
   // Follow-up issue proposals from reviewloop-feature agents — see suggestedIssueFields.
   suggestedIssues: defineTable(suggestedIssueFields)

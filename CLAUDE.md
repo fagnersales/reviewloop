@@ -12,6 +12,27 @@ Convex agent skills for common tasks can be installed by running
 
 <!-- convex-ai-end -->
 
+## Running the review worker (for Claude Code)
+
+Convex can't spawn `claude`, so the review worker (`worker/index.mjs`) is what
+actually runs reviews **and** the House Rules composer's rewrite/shorten
+transforms. If it's not running, none of that happens: queued `reviews` and
+`ruleDrafts` rows just sit in `queued` forever. A House Rules scrim stuck on
+"Rewriting…"/"Shortening…" is the classic symptom — the worker is down. (The UI
+now gives up after ~95s with "The rewriter isn't responding — is the worker
+running?", but the fix is still to start the worker.)
+
+Start it **detached** so it survives the session/terminal closing:
+
+```bash
+nohup npm run worker > worker.log 2>&1 & disown
+```
+
+- Watch it: `tail -f worker.log` · Stop it: `pkill -f worker/index.mjs`
+- Check it's alive before assuming a review/draft is stuck: `pgrep -f worker/index.mjs`
+- `nohup` survives session close but **not reboot/logout** — for always-on, set up
+  a `launchd` LaunchAgent instead.
+
 ## Waiting for a PR review (for Claude Code)
 
 After you push a PR to a repo this console reviews, **do not ask the human

@@ -163,3 +163,82 @@ body {
   color: transparent;
   animation: cl-shimmer 2.2s linear infinite;
 }
+
+/* ── House-rules Rewrite/Shorten "Typewriter" treatment ─────────────────────
+   The busy scrim + generative typing reveal on the New-rule composer
+   (src/ui/HouseRules.tsx). The scrim holds a pulsing bouncing-dots status
+   during the (variable-latency) worker job; on finish the rewritten text is
+   typed in character-by-character behind a blinking accent caret and settles
+   with an accent glow. The status text pulse reuses the global .rl-pulse.
+   Accent is the console green (#3fb950 / rgba(63,185,80,…)). */
+@keyframes hr-scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes hr-scrim-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes hr-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes hr-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+@keyframes hr-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  95% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+@keyframes hr-glow-text {
+  0% {
+    text-shadow: 0 0 9px rgba(63, 185, 80, 0.85), 0 0 22px rgba(63, 185, 80, 0.45);
+    color: #d7f7dc;
+  }
+  100% {
+    text-shadow: 0 0 0 rgba(63, 185, 80, 0);
+    color: #e4e4e7;
+  }
+}
+@keyframes hr-glow-ring {
+  0% {
+    box-shadow: 0 0 0 1px rgba(63, 185, 80, 0.55), 0 0 18px rgba(63, 185, 80, 0.3);
+  }
+  100% {
+    box-shadow: 0 0 0 1px rgba(63, 185, 80, 0), 0 0 0 rgba(63, 185, 80, 0);
+  }
+}
+.hr-glow {
+  animation: hr-glow-text 1.1s ease-out both, hr-glow-ring 1.1s ease-out both;
+}

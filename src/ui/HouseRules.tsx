@@ -8,10 +8,10 @@
 // scope with inline text editing on the right. Writes go straight to Convex
 // (rules.add / setText / setLevel / remove); the worker subscribes and injects
 // the applicable rules into the next review's brief.
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useMutation } from "convex/react"
 import { useQuery } from "convex-helpers/react/cache/hooks"
-import { Gavel, Globe, Pencil, Target, X } from "lucide-react"
+import { Gavel, Globe, Pencil, Scissors, Sparkles, Target, X } from "lucide-react"
 import { api } from "../../convex/_generated/api"
 import type { Id } from "../../convex/_generated/dataModel"
 import { cn } from "../lib/cn"
@@ -20,6 +20,7 @@ import { useReadOnly } from "../read-only"
 import { FilterDropdown, type FilterOption } from "./FilterDropdown"
 
 type Level = "block" | "warn"
+type DraftMode = "rewrite" | "shorten"
 
 type Rule = {
   id: Id<"reviewRules">
@@ -54,6 +55,54 @@ const ADD_NOTICE: Record<string, string> = {
   exists: "Already a rule in that scope.",
   full: "Rule list is full.",
   invalid: "Rule is empty or too long.",
+}
+
+// Rewrite/shorten failure notices (the reject codes from ruleDrafts.request).
+const DRAFT_NOTICE: Record<string, string> = {
+  busy: "The rewriter is busy — try again in a moment.",
+  invalid: "Nothing to rewrite.",
+}
+
+// Gerund shown in the busy scrim while the transform runs.
+const DRAFT_GERUND: Record<DraftMode, string> = {
+  rewrite: "Rewriting",
+  shorten: "Shortening",
+}
+
+// Character-reveal pacing for the type-in finish (matches the approved
+// treatment): a couple of glyphs every ~22ms, a ~240ms scrim fade before typing
+// starts, and a ~1s accent glow after the text lands.
+const TYPE_TICK_MS = 22
+const TYPE_CHARS_PER_TICK = 2
+const CLOSE_MS = 240
+const GLOW_MS = 1000
+
+// Watchdog for a run that never resolves — the worker is down, so the queued job
+// row is never claimed and no done/failed ever arrives. Without this the scrim
+// spins forever. A hair above the worker's own 90s CLI timeout so a slow-but-live
+// transform still wins the race and types in.
+const DRAFT_TIMEOUT_MS = 95_000
+
+// The centered pulsing status inside the busy scrim: three bouncing accent dots
+// plus the gerund. The text pulse reuses the global .rl-pulse; the dots bounce
+// via hr-bounce (index.css) with staggered delays.
+function TransformStatus({ mode }: { mode: DraftMode }) {
+  return (
+    <span className="flex items-center gap-2 rl-pulse">
+      <span className="flex gap-1">
+        <span className="size-1.5 rounded-full bg-accent" style={{ animation: "hr-bounce 1s ease-in-out infinite" }} />
+        <span
+          className="size-1.5 rounded-full bg-accent"
+          style={{ animation: "hr-bounce 1s ease-in-out infinite", animationDelay: "0.15s" }}
+        />
+        <span
+          className="size-1.5 rounded-full bg-accent"
+          style={{ animation: "hr-bounce 1s ease-in-out infinite", animationDelay: "0.3s" }}
+        />
+      </span>
+      <span className="font-mono text-[11px] uppercase tracking-[0.12em] text-zinc-300">{DRAFT_GERUND[mode]}…</span>
+    </span>
+  )
 }
 
 function CharBudget({ len }: { len: number }) {
@@ -202,10 +251,114 @@ function RuleRow({ rule }: { rule: Rule }) {
 // with a non-empty draft is swallowed so it never eats your writing.
 function Composer({ rules, repos }: { rules: Rule[]; repos: string[] }) {
   const add = useMutation(api.rules.add)
+  const requestDraft = useMutation(api.ruleDrafts.request)
+  const discardDraft = useMutation(api.ruleDrafts.discard)
   const [draft, setDraft] = useState("")
   const [level, setLevel] = useState<Level>("block")
   const [repo, setRepo] = useState(ALL_REPOS)
   const [notice, setNotice] = useState<string | null>(null)
+  // A rewrite/shorten in flight, run as a real backend job with variable latency.
+  // `phase` drives the "Typewriter" treatment: running (busy scrim over the field)
+  // → closing (scrim fades) → typing (the finished text is typed in char-by-char
+  // behind an accent caret) → glow (accent settle) → idle. `mode` is the button
+  // that spawned it (for the scrim label), `jobId` the row we subscribe to, and
+  // `typed` the growing substring shown during the reveal.
+  const [phase, setPhase] = useState<"idle" | "running" | "closing" | "typing" | "glow">("idle")
+  const [mode, setMode] = useState<DraftMode>("rewrite")
+  const [jobId, setJobId] = useState<Id<"ruleDrafts"> | null>(null)
+  const [typed, setTyped] = useState("")
+  const job = useQuery(api.ruleDrafts.get, jobId ? { id: jobId } : "skip")
+
+  // The field is locked and the buttons disabled for the whole run, up to the
+  // glow settle (which is editable again — the glow is a pure decoration).
+  const busy = phase === "running" || phase === "closing" || phase === "typing"
+
+  // Timer hygiene: every setTimeout goes in this array and the reveal setInterval
+  // in its own ref, so a new run and unmount can clear all of them. The composer
+  // unmounts when the House Rules page closes; a leaked interval that calls
+  // setState after unmount is a bug.
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
+  const interval = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  const clearAll = () => {
+    timers.current.forEach(clearTimeout)
+    timers.current = []
+    if (interval.current !== undefined) {
+      clearInterval(interval.current)
+      interval.current = undefined
+    }
+  }
+  useEffect(() => () => clearAll(), [])
+
+  // Act only on the job's terminal states, and only once: the guard on
+  // phase === "running" means the intermediate queued/running updates are ignored
+  // and — because the terminal branch immediately moves phase off "running" (and
+  // clears jobId) — the effect can't double-fire for the same job.
+  useEffect(() => {
+    if (!jobId || !job || phase !== "running") return
+    if (job.status === "done") {
+      clearAll() // cancel the watchdog timeout — the run resolved in time
+      const full = job.output ?? ""
+      setPhase("closing")
+      timers.current.push(
+        setTimeout(() => {
+          setPhase("typing")
+          let i = 0
+          interval.current = setInterval(() => {
+            i = Math.min(full.length, i + TYPE_CHARS_PER_TICK)
+            setTyped(full.slice(0, i))
+            if (i >= full.length) {
+              if (interval.current !== undefined) {
+                clearInterval(interval.current)
+                interval.current = undefined
+              }
+              setDraft(full)
+              setPhase("glow")
+              timers.current.push(setTimeout(() => setPhase("idle"), GLOW_MS))
+            }
+          }, TYPE_TICK_MS)
+        }, CLOSE_MS),
+      )
+      void discardDraft({ id: jobId })
+      setJobId(null)
+    } else if (job.status === "failed") {
+      clearAll() // cancel the watchdog timeout — the run resolved in time
+      setNotice(job.error ? `Couldn’t ${job.mode} — ${job.error}` : "Rewrite failed.")
+      setPhase("idle")
+      void discardDraft({ id: jobId })
+      setJobId(null)
+    }
+  }, [job, jobId, phase, discardDraft])
+
+  // Queue a rewrite/shorten of the current draft; the worker runs `claude` and
+  // the effect above types the result in when it lands. The scrim stays up for
+  // the whole (variable) worker latency.
+  const runTransform = async (m: DraftMode) => {
+    const text = draft.trim()
+    if (!text || phase !== "idle") return
+    clearAll()
+    setNotice(null)
+    setTyped("")
+    setMode(m)
+    setPhase("running")
+    const result = await requestDraft({ input: text, mode: m })
+    if (result === "busy" || result === "invalid") {
+      setPhase("idle")
+      setNotice(DRAFT_NOTICE[result])
+      return
+    }
+    setJobId(result)
+    // Arm the watchdog: if the job never reaches done/failed (worker down, so the
+    // row is never claimed), drop the scrim, discard the orphan row, and say so.
+    // The terminal branches above clearAll() this on a normal resolve.
+    timers.current.push(
+      setTimeout(() => {
+        setPhase("idle")
+        setNotice("The rewriter isn’t responding — is the worker running?")
+        void discardDraft({ id: result })
+        setJobId(null)
+      }, DRAFT_TIMEOUT_MS),
+    )
+  }
 
   // Scope picker options — the count column shows how many rules each scope
   // already has. Options are labelled by short repo name (the owner prefix is
@@ -237,24 +390,85 @@ function Composer({ rules, repos }: { rules: Rule[]; repos: string[] }) {
   return (
     <div className="rounded-lg border border-line2 bg-panel p-4">
       <div className="mb-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">New rule</div>
-      <textarea
-        autoFocus
-        rows={4}
-        value={draft}
-        onChange={(e) => {
-          setDraft(e.target.value)
-          setNotice(null)
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Escape" && draft.trim()) e.stopPropagation()
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit()
-        }}
-        placeholder='e.g. "No code comments that narrate what the next line does — comment only constraints the code can’t express."'
-        className="w-full resize-y rounded-[6px] border border-edge bg-inset px-3 py-2.5 font-mono text-[12px] leading-relaxed text-zinc-200 placeholder:text-zinc-600 focus:border-edgehi focus:outline-none"
-      />
+      <div className="relative">
+        <textarea
+          autoFocus
+          rows={4}
+          value={phase === "closing" ? "" : phase === "typing" ? typed : draft}
+          readOnly={busy}
+          onChange={(e) => {
+            setDraft(e.target.value)
+            setNotice(null)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape" && draft.trim()) e.stopPropagation()
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !busy) void submit()
+          }}
+          placeholder='e.g. "No code comments that narrate what the next line does — comment only constraints the code can’t express."'
+          className={cn(
+            "w-full resize-y rounded-[6px] border border-edge bg-inset px-3 py-2.5 font-mono text-[12px] leading-relaxed text-zinc-200 placeholder:text-zinc-600 focus:border-edgehi focus:outline-none",
+            // While typing, the mirror overlay draws the text (so the caret can
+            // trail the last glyph inline); hide the textarea's own text but keep
+            // it for sizing. Settle with the accent glow.
+            phase === "typing" && "text-transparent",
+            phase === "glow" && "hr-glow",
+          )}
+        />
+        {/* Mirror overlay: same box/padding/font as the textarea, drawing the
+            revealed substring in accent green with a blinking caret inline after
+            the last character — so the caret always trails the text. */}
+        {phase === "typing" && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words rounded-[6px] px-3 py-2.5 font-mono text-[12px] leading-relaxed"
+            style={{ color: "#d7f7dc", textShadow: "0 0 8px rgba(63,185,80,0.55), 0 0 18px rgba(63,185,80,0.28)" }}
+          >
+            {typed}
+            <span
+              className="ml-px inline-block h-[13px] w-[2px] translate-y-[2px] bg-accent align-baseline"
+              style={{ boxShadow: "0 0 6px 1px rgba(63,185,80,0.8)", animation: "hr-caret 1s step-end infinite" }}
+            />
+          </div>
+        )}
+        {/* The busy scrim: pops in, holds the pulsing status for the whole worker
+            latency, then fades out on closing before the type-in begins. */}
+        {(phase === "running" || phase === "closing") && (
+          <div
+            className="absolute inset-0 flex items-center justify-center rounded-[6px] border border-edgehi bg-sunken/70 backdrop-blur-[2px]"
+            style={{ animation: phase === "closing" ? "hr-scrim-out 0.24s ease-in both" : "hr-scrim-in 0.18s ease-out both" }}
+          >
+            <span style={phase === "running" ? { animation: "hr-pop-in 0.24s ease-out both" } : undefined}>
+              <TransformStatus mode={mode} />
+            </span>
+          </div>
+        )}
+      </div>
       <div className="mt-1 flex items-center justify-between gap-2">
         <span className="text-[10.5px] text-[#fca5a5]">{notice}</span>
         <CharBudget len={draft.length} />
+      </div>
+
+      <div className="mt-2 flex items-stretch gap-2">
+        <button
+          type="button"
+          disabled={busy || !draft.trim()}
+          onClick={() => void runTransform("rewrite")}
+          title="Rewrite more concisely (AI)"
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-[6px] border border-edge2 bg-inset px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-zinc-300 transition-colors enabled:hover:border-edgehi enabled:hover:text-zinc-100 disabled:opacity-40"
+        >
+          <Sparkles className="size-3" />
+          Rewrite
+        </button>
+        <button
+          type="button"
+          disabled={busy || !draft.trim()}
+          onClick={() => void runTransform("shorten")}
+          title="Shorten to the fewest words (AI)"
+          className="flex flex-1 items-center justify-center gap-1.5 rounded-[6px] border border-edge2 bg-inset px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-zinc-300 transition-colors enabled:hover:border-edgehi enabled:hover:text-zinc-100 disabled:opacity-40"
+        >
+          <Scissors className="size-3" />
+          Shorten
+        </button>
       </div>
 
       <div className="mt-2.5 flex items-center">
