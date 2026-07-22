@@ -6,7 +6,7 @@
 // via src/mobile.
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "convex-helpers/react/cache/hooks"
-import { ArrowUpRight, Check, Inbox, Loader2 } from "lucide-react"
+import { ArrowUpRight, Check, Inbox, Loader2, Sparkles } from "lucide-react"
 import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
 import { ReviewReport, repoShort } from "../review/kit"
@@ -65,7 +65,12 @@ function FuRow({ s, selected, onSelect }: { s: Suggestion; selected: boolean; on
         <span className="min-w-0 truncate">
           {repoShort(s.repo)}  #{s.sourcePrNumber}
         </span>
-        <span className={cn("shrink-0", FU_CAT_TEXT[s.category])}>{s.category}</span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          {s.status === "suggested" && s.triage === "kept" && (
+            <Sparkles className="size-2.5 text-[#86efac]" aria-label="Kept by auto-review" />
+          )}
+          <span className={FU_CAT_TEXT[s.category]}>{s.category}</span>
+        </span>
       </div>
     </button>
   )
@@ -112,6 +117,20 @@ function FuDetail({ s, actions }: { s: Suggestion; actions: FollowUpActions }) {
         )}
 
         <div className="my-4 h-px bg-line" />
+
+        {/* auto-triage note — the agent's verdict on a row still awaiting the human */}
+        {s.status === "suggested" && s.triage === "triaging" && (
+          <div className="mb-3 inline-flex items-center gap-2 text-xs text-zinc-500">
+            <Loader2 className="size-3.5 animate-spin" />
+            Auto-review is deciding…
+          </div>
+        )}
+        {s.status === "suggested" && s.triage === "kept" && s.triageReason && (
+          <div className="mb-3 flex items-start gap-2 rounded border border-[#3fb950]/25 bg-[#3fb950]/[0.06] px-3 py-2 text-xs leading-relaxed text-[#86efac]">
+            <Sparkles className="mt-px size-3.5 shrink-0" />
+            <span>Auto-review kept this — {s.triageReason}</span>
+          </div>
+        )}
 
         {/* action area — gated by status, hidden on the read-only public build */}
         {s.status === "suggested" &&
@@ -199,7 +218,11 @@ function FuDetail({ s, actions }: { s: Suggestion; actions: FollowUpActions }) {
 
         {s.status === "dismissed" && (
           <div className="flex flex-wrap items-center justify-between gap-2.5">
-            <span className="text-xs text-zinc-600">Dismissed — kept as history, never opened</span>
+            <span className="text-xs text-zinc-600">
+              {s.triage === "dropped" && s.triageReason
+                ? `Dropped by auto-review — ${s.triageReason}`
+                : "Dismissed — kept as history, never opened"}
+            </span>
             {!readOnly && (
               <button
                 type="button"

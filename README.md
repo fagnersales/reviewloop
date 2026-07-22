@@ -180,6 +180,13 @@ an agent-proposed follow-up (or files an issue by hand), then **promotes** it to
 `ready-for-agent`. Only then does the solver act. The label is the single trigger —
 so manually-triaged issues work too, not just agent-proposed ones.
 
+The optional **Auto-review** toggle on the Follow-ups view sits *before* both
+gates, and only ever filters: when it's on, the worker runs a one-shot `claude -p`
+judgment over each new inbox proposal and either **drops** it (dismissed with the
+agent's one-line reason — Restore brings it back, and a restored row is marked
+kept so the agent can't re-drop it) or **keeps** it for you. It never approves,
+opens, or promotes anything, so both human brakes stay in place.
+
 ### The issue label lifecycle
 
 `ready-for-agent` means **only "waiting, claimable"** — so the solver swaps the

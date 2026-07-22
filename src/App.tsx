@@ -53,6 +53,7 @@ import { FilterDropdown, type FilterOption } from "./ui/FilterDropdown"
 import { PhoneAccess } from "./ui/PhoneAccess"
 import { HouseRules } from "./ui/HouseRules"
 import { ReviewerSettings } from "./ui/ReviewerSettings"
+import { AutoReview } from "./ui/AutoReview"
 import { MobileApp } from "./mobile/MobileApp"
 import { useReadOnly } from "./read-only"
 import { useView } from "./lib/view"
@@ -1131,6 +1132,7 @@ export default function App() {
         <div className="mt-auto" />
         <HouseRules />
         <ReviewerSettings />
+        <AutoReview />
         <PhoneAccess />
       </nav>
 

@@ -1,7 +1,8 @@
 import { v } from "convex/values"
-import { mutation, query } from "./_generated/server"
+import { internalMutation, mutation, query } from "./_generated/server"
 import type { MutationCtx } from "./_generated/server"
 import {
+  reviewerModel,
   suggestedIssueFields,
   suggestionCategory,
   suggestionSource,
@@ -13,6 +14,11 @@ import { MAX_WATCHED_REPOS } from "./repos"
 // forever when it keeps failing. After this many tries the row drops out of the
 // worker's claimable queries with its `error` recorded, instead of spinning.
 const MAX_WORKER_ATTEMPTS = 5
+
+// A `triaging` claim older than this belongs to a crashed worker: the judgment
+// run is a one-shot `claude -p` that finishes in well under a couple of minutes,
+// so requeueStaleTriage (cron) can safely hand the row back out.
+const TRIAGE_STALE_MS = 10 * 60 * 1000
 
 // Bounded reads for the inbox: suggestions are config-scale (a handful per PR, a
 // handful of PRs), and these caps keep every read safe even as `opened`/`dismissed`
@@ -205,7 +211,9 @@ export const dismiss = mutation({
 
 // Undo a dismissal, or cancel a still-pending approval, back to "suggested". Safe
 // against a race with the worker: once the row is "opened" the GitHub issue exists
-// and there's nothing to undo, so it refuses.
+// and there's nothing to undo, so it refuses. Restoring a row auto-triage had
+// dropped stamps it `kept` (reason cleared — it was a drop rationale): a human
+// override outranks the agent, which must never re-drop it.
 export const undo = mutation({
   args: { id: v.id("suggestedIssues") },
   returns: intentResult,
@@ -220,6 +228,7 @@ export const undo = mutation({
       decidedBy: undefined,
       attempts: 0,
       error: undefined,
+      ...(row.triage === "dropped" ? { triage: "kept" as const, triageReason: undefined } : {}),
     })
     return { ok: true }
   },
@@ -327,6 +336,167 @@ export const recordWorkerError = mutation({
     const row = await ctx.db.get(id)
     if (!row) return null
     await ctx.db.patch(id, { error, attempts: (row.attempts ?? 0) + 1 })
+    return null
+  },
+})
+
+// ── auto-triage: the inbox's optional agent gatekeeper ────────────────────────
+// Off by default. When the operator flips it on (the Follow-ups view toggle),
+// the worker judges each untriaged `suggested` row with a one-shot `claude -p`
+// and either drops it (dismissed, agent as decider) or keeps it for the human.
+// Deliberately filter-only: a kept row still needs the normal human "Open it" —
+// gate 1 and gate 2 stay human (see the lifecycle note in schema.ts). Turning
+// the toggle on also sweeps the *existing* backlog: any suggested row without a
+// verdict becomes claimable, not just ones that arrive later.
+
+// The console toggle + model picker, and the worker's gate, in one place. No row
+// means off; no model means "nobody has picked yet" and the worker uses its
+// config fallback (exactly the reviewerSettings contract).
+export const autoTriage = query({
+  args: {},
+  returns: v.object({ enabled: v.boolean(), model: v.optional(reviewerModel) }),
+  handler: async (ctx) => {
+    const row = await ctx.db.query("triageSettings").first()
+    return { enabled: row?.enabled ?? false, model: row?.model }
+  },
+})
+
+// A partial patch: the toggle sends { enabled }, the model picker { model } —
+// each leaves the other alone. A model pick before any toggle creates the row
+// still off, so picking a model never silently enables auto-review.
+export const setAutoTriage = mutation({
+  args: { enabled: v.optional(v.boolean()), model: v.optional(reviewerModel) },
+  returns: v.null(),
+  handler: async (ctx, { enabled, model }) => {
+    const row = await ctx.db.query("triageSettings").first()
+    const patch = {
+      ...(enabled !== undefined ? { enabled } : {}),
+      ...(model !== undefined ? { model } : {}),
+      updatedAt: Date.now(),
+    }
+    if (row) await ctx.db.patch(row._id, patch)
+    else await ctx.db.insert("triageSettings", { enabled: enabled ?? false, model, updatedAt: Date.now() })
+    return null
+  },
+})
+
+// The worker subscribes to this: suggested rows awaiting a triage judgment.
+// Empty whenever the toggle is off — the worker needs no setting of its own, and
+// flipping the toggle re-fires the subscription with the whole backlog. Oldest
+// first, retry-capped like the other claimable queries.
+export const toTriage = query({
+  args: {},
+  returns: v.array(suggestionDoc),
+  handler: async (ctx) => {
+    const cfg = await ctx.db.query("triageSettings").first()
+    if (!cfg?.enabled) return []
+    const rows = await ctx.db
+      .query("suggestedIssues")
+      .withIndex("by_status", (q) => q.eq("status", "suggested"))
+      .order("asc")
+      .take(INBOX_TAKE.suggested)
+    return rows.filter(
+      (r) => r.triage === undefined && (r.triageAttempts ?? 0) < MAX_WORKER_ATTEMPTS,
+    )
+  },
+})
+
+// Worker claims a row before spawning the judgment run — first writer wins, so
+// two workers never judge the same proposal. `triagedAt` starts the stale clock.
+export const claimTriage = mutation({
+  args: { id: v.id("suggestedIssues"), worker: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { id, worker }) => {
+    const row = await ctx.db.get(id)
+    if (!row || row.status !== "suggested" || row.triage !== undefined) return false
+    await ctx.db.patch(id, { triage: "triaging", triagedAt: Date.now(), triagedBy: worker })
+    return true
+  },
+})
+
+// Worker reports the verdict. A late finish (claim lost to the stale cron, or a
+// human decided while the run was in flight) is dropped — the human always wins:
+// a row no longer `suggested` just gets its claim marker cleared, verdict unused.
+export const finishTriage = mutation({
+  args: {
+    id: v.id("suggestedIssues"),
+    verdict: v.union(v.literal("keep"), v.literal("drop")),
+    reason: v.string(),
+    by: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { id, verdict, reason, by }) => {
+    const row = await ctx.db.get(id)
+    if (!row || row.triage !== "triaging") return null
+    if (row.status !== "suggested") {
+      await ctx.db.patch(id, { triage: undefined, triagedAt: undefined })
+      return null
+    }
+    const now = Date.now()
+    if (verdict === "keep") {
+      await ctx.db.patch(id, {
+        triage: "kept",
+        triagedAt: now,
+        triagedBy: by,
+        triageReason: reason,
+      })
+    } else {
+      await ctx.db.patch(id, {
+        triage: "dropped",
+        triagedAt: now,
+        triagedBy: by,
+        triageReason: reason,
+        status: "dismissed",
+        decidedAt: now,
+        decidedBy: by,
+      })
+    }
+    return null
+  },
+})
+
+// Worker records a failed judgment run: the claim is released so a retry can
+// claim it, and triageAttempts eventually drops the row out of toTriage (see
+// MAX_WORKER_ATTEMPTS) — it then just stays `suggested`, awaiting the human as
+// if auto-triage were off. Failing open is the point: a broken triage agent
+// must never wedge the inbox.
+export const recordTriageError = mutation({
+  args: { id: v.id("suggestedIssues"), error: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { id, error }) => {
+    const row = await ctx.db.get(id)
+    if (!row || row.triage !== "triaging") return null
+    await ctx.db.patch(id, {
+      triage: undefined,
+      triagedAt: undefined,
+      error,
+      triageAttempts: (row.triageAttempts ?? 0) + 1,
+    })
+    return null
+  },
+})
+
+// Crash recovery (cron): release `triaging` claims whose worker died mid-run, so
+// the row becomes claimable again instead of looking in-flight forever. Counts as
+// an attempt — a row that only ever crashes still hits the retry cap.
+export const requeueStaleTriage = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const now = Date.now()
+    const rows = await ctx.db
+      .query("suggestedIssues")
+      .withIndex("by_status", (q) => q.eq("status", "suggested"))
+      .take(INBOX_TAKE.suggested)
+    for (const r of rows) {
+      if (r.triage !== "triaging") continue
+      if (now - (r.triagedAt ?? 0) < TRIAGE_STALE_MS) continue
+      await ctx.db.patch(r._id, {
+        triage: undefined,
+        triagedAt: undefined,
+        triageAttempts: (r.triageAttempts ?? 0) + 1,
+      })
+    }
     return null
   },
 })

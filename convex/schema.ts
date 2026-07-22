@@ -118,6 +118,25 @@ export const triageLabel = v.union(
   v.literal("wontfix"),
 )
 
+// Auto-triage of the inbox (opt-in, see the `triageSettings` table): when the
+// operator enables it, the worker runs a one-shot `claude -p` judgment over each
+// new `suggested` row and either drops it (dismissed, with the agent as decider)
+// or keeps it — a kept row still awaits the normal human gate 1, so auto-triage
+// only ever *filters* the inbox, it never approves/opens anything. The marker
+// lives beside `status`, not inside it, because triage is orthogonal to the
+// suggestion lifecycle:
+//   (absent)  : never considered (auto-triage off, or not picked up yet)
+//   triaging  : a worker claimed it and the judgment run is in flight
+//   kept      : the agent decided it's worth a human's attention — stays suggested
+//   dropped   : the agent dismissed it (status flips to dismissed in the same
+//               write; a human Restore flips it back and stamps `kept` so the
+//               agent can't re-drop what a human chose to keep)
+export const triageState = v.union(
+  v.literal("triaging"),
+  v.literal("kept"),
+  v.literal("dropped"),
+)
+
 // The non-system columns of a `suggestedIssues` row.
 export const suggestedIssueFields = {
   // source PR provenance — the PR the agent built when it proposed this
@@ -156,6 +175,16 @@ export const suggestedIssueFields = {
   // spinning the subscription forever.
   attempts: v.optional(v.number()),
   error: v.optional(v.string()),
+  // auto-triage of new suggestions — see triageState above. `triagedAt` doubles
+  // as the stale-claim boundary (a crashed worker's "triaging" row is requeued by
+  // cron); `triageAttempts` bounds retries separately from the GitHub-side
+  // `attempts` (which approve() resets) — a failed run's reason lands in the
+  // shared `error` field.
+  triage: v.optional(triageState),
+  triagedAt: v.optional(v.number()),
+  triagedBy: v.optional(v.string()), // worker/agent label, like proposedBy
+  triageReason: v.optional(v.string()), // the agent's one-line keep/drop rationale
+  triageAttempts: v.optional(v.number()),
 }
 
 // ── autonomous solver (issue → PR) ───────────────────────────────────────────
@@ -385,6 +414,18 @@ export default defineSchema({
     worker: v.optional(v.string()),
     createdAt: v.number(),
   }).index("by_status", ["status", "createdAt"]),
+
+  // The inbox's auto-triage switch + model (suggestedIssues.ts autoTriage/
+  // setAutoTriage). At most one row, created on the first toggle/pick — no row
+  // means "off", exactly like reviewerSettings' no-row-means-config-default, so
+  // deploying this table never starts dismissing anyone's inbox unasked. The
+  // model shares the reviewer picker's alias vocabulary; absent until first
+  // picked, and the worker then uses its own config fallback.
+  triageSettings: defineTable({
+    enabled: v.boolean(),
+    model: v.optional(reviewerModel),
+    updatedAt: v.number(),
+  }),
 
   // Follow-up issue proposals from reviewloop-feature agents — see suggestedIssueFields.
   suggestedIssues: defineTable(suggestedIssueFields)

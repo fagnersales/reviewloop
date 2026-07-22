@@ -13,6 +13,9 @@
 //                           `needs-triage` issues (gate 1), and propagate a human's
 //                           triage-label choice to the real issue (gate 2). The
 //                           console only records intent; this worker holds gh auth.
+//   - suggestedIssues.toTriage -> inbox auto-review (opt-in console toggle):
+//                           judge each new proposal with a one-shot `claude -p`
+//                           and keep it for the human or drop it.
 // A long fallback timer reconciles open PRs via `gh` too, so a webhook missed
 // while we were down still gets caught. This replaces the old watch.sh poll loop.
 //
@@ -59,6 +62,11 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || cfg.claudeBin || "claude"
 // rewrite wants speed, not the review model, so this defaults to a fast tier
 // independent of the reviewer picker.
 const DRAFT_MODEL = process.env.REVIEWLOOP_DRAFT_MODEL || cfg.draftModel || "haiku"
+// Fallback model for inbox auto-triage (keep/drop a suggested follow-up). A
+// judgment call, not a rewrite — worth a mid tier — and independent of the
+// reviewer picker. Only the fallback: once a model is picked in the console
+// (triageSettings, via the Follow-ups picker), the console's choice wins.
+const TRIAGE_MODEL = process.env.REVIEWLOOP_TRIAGE_MODEL || cfg.triageModel || "sonnet"
 const WORKER = hostname()
 const LOG_DIR = join(__dirname, "logs")
 mkdirSync(LOG_DIR, { recursive: true })
@@ -137,6 +145,15 @@ const processingMerges = new Set()
 // a re-fired ruleDrafts.claimable subscription doesn't spawn a second `claude`.
 const processingDrafts = new Set()
 
+// Inbox auto-triage judgments we're mid-run on, by row id — same idiom; the
+// Convex claim (claimTriage) is what stops *other* workers. Capped: flipping the
+// toggle on sweeps the whole untriaged backlog into toTriage at once, and this
+// bounds how many `claude` judgments run at a time. Rows skipped at the cap are
+// NOT claimed, so each finish (a Convex write) re-fires the subscription and the
+// remainder drains a few at a time.
+const processingTriage = new Set()
+const TRIAGE_CONCURRENCY = 3
+
 // The dashboard-owned watch list, kept live via repos.list (see subscriptions).
 // Drives the `gh` reconcile; the queue itself decides what actually gets reviewed.
 let watchedRepos = []
@@ -146,6 +163,12 @@ let watchedRepos = []
 // before then use cfg.model and the CLI's default effort. Read at spawn time,
 // so a change applies to the next review, never one already running.
 let reviewerSettings = null
+
+// The console-owned auto-triage settings (the Follow-ups toggle + model picker),
+// kept live via suggestedIssues.autoTriage. The model is read at judgment spawn
+// time — a change applies to the next judgment, never one already running. Null
+// until the first snapshot; no picked model → the TRIAGE_MODEL fallback.
+let autoTriageSettings = null
 
 // The console-owned house rules (the taste editor), kept live via rules.list —
 // the full set, global and repo-scoped; rulesForRepo filters per review. The
@@ -986,6 +1009,98 @@ async function processDraft(row) {
   }
 }
 
+// ── inbox auto-triage (keep/drop a suggested follow-up) ──────────────────────
+// When the console's auto-review toggle is on, suggestedIssues.toTriage streams
+// untriaged proposals here and this worker — which holds the CLI — asks a model
+// to judge each one. DROP dismisses it (the human can still Restore); KEEP marks
+// it worth the human's attention and leaves it in the inbox. Like the rule-draft
+// transforms: a pure text judgment, no clone, no tools, one verdict out.
+
+function triagePrompt(row) {
+  const files =
+    row.files && row.files.length ? `\nFiles it says to touch: ${row.files.join(", ")}` : ""
+  return `You are triaging the follow-up inbox of an automated code-review console. While building the PR below, an agent proposed the follow-up issue below. Decide whether it deserves a place in the human operator's inbox (KEEP) or should be dropped (DROP).
+
+DROP a proposal that a busy maintainer would not want filed as an issue:
+- too vague to act on, or pure speculation with no concrete change
+- trivial polish or busywork whose value doesn't cover the cost of tracking it
+- something the source PR itself already resolved, or that only restates it
+- process chatter dressed up as work ("consider revisiting…", "maybe explore…")
+
+KEEP a proposal a maintainer would plausibly want to schedule: a real bug or risk, a disclosed limitation that matters, or a concrete, scoped improvement. When genuinely unsure, KEEP — a wrong drop hides work from the human; a wrong keep costs them one glance.
+
+Proposal:
+- Title: ${row.title}
+- Category: ${row.category} · Flagged as: ${row.source}${files}
+- Source PR: ${row.repo}#${row.sourcePrNumber} — ${row.sourcePrTitle}
+
+Body:
+${row.body}
+
+Answer in EXACTLY this form, nothing else:
+Line 1: KEEP or DROP
+Line 2: one sentence (under 200 characters) saying why, written for the human operator.`
+}
+
+// First line KEEP/DROP, next non-empty line the reason — or undefined when the
+// answer doesn't parse (recorded as an error; we never guess a verdict).
+function parseTriageVerdict(text) {
+  const lines = (text || "").trim().split("\n").map((l) => l.trim()).filter(Boolean)
+  const m = lines[0]?.match(/^(KEEP|DROP)\b/i)
+  if (!m) return undefined
+  return {
+    verdict: m[1].toUpperCase() === "KEEP" ? "keep" : "drop",
+    reason: (lines[1] || "").slice(0, 300) || "(no reason given)",
+  }
+}
+
+async function triageSuggestion(row) {
+  const id = row._id
+  if (processingTriage.has(id)) return
+  if (processingTriage.size >= TRIAGE_CONCURRENCY) return
+  processingTriage.add(id)
+  const by = `auto-triage@${WORKER}`
+  try {
+    let won = false
+    try {
+      won = await client.mutation(api.suggestedIssues.claimTriage, { id, worker: by })
+    } catch (e) {
+      log(`triage claim error «${row.title}»:`, String(e))
+    }
+    if (!won) return
+    const model = autoTriageSettings?.model ?? TRIAGE_MODEL
+    log(`⚖ triaging «${row.title}» (${row.repo}#${row.sourcePrNumber}) [${model}]`)
+    const { code, out, err } = await run(
+      CLAUDE_BIN,
+      ["-p", triagePrompt(row), "--output-format", "text", "--model", model],
+      { timeout: 180_000 },
+    )
+    const parsed = code === 0 ? parseTriageVerdict(out) : undefined
+    if (!parsed) {
+      const reason =
+        code === 0
+          ? `unparseable verdict: ${(out || "").trim().slice(0, 120)}`
+          : errorReason(err, `claude exited ${code}`)
+      log(`✗ triage failed «${row.title}»: ${reason}`)
+      await client
+        .mutation(api.suggestedIssues.recordTriageError, { id, error: reason })
+        .catch((e) => log(`recordTriageError error:`, String(e)))
+      return
+    }
+    log(`${parsed.verdict === "keep" ? "✓ kept" : "✂ dropped"} «${row.title}» — ${parsed.reason}`)
+    await client
+      .mutation(api.suggestedIssues.finishTriage, {
+        id,
+        verdict: parsed.verdict,
+        reason: parsed.reason,
+        by,
+      })
+      .catch((e) => log(`finishTriage error:`, String(e)))
+  } finally {
+    processingTriage.delete(id)
+  }
+}
+
 // ── subscriptions ────────────────────────────────────────────────────────────
 client.onUpdate(api.reviews.claimable, {}, (rows) => {
   latestClaimable = rows
@@ -1036,6 +1151,15 @@ client.onUpdate(api.ruleDrafts.claimable, {}, (rows) => {
   }
 })
 
+// Untriaged inbox proposals when the console's auto-review toggle is on (the
+// query itself is empty while it's off). The in-flight guard + the Convex claim
+// mean a re-fire while one is mid-judgment is a no-op.
+client.onUpdate(api.suggestedIssues.toTriage, {}, (rows) => {
+  for (const row of rows) {
+    triageSuggestion(row).catch((e) => log(`triageSuggestion error «${row.title}»:`, String(e)))
+  }
+})
+
 // The dashboard-owned watch list. Each change refreshes our copy and, when the
 // set actually changed (including the first load), kicks an immediate reconcile
 // so a newly added repo's open PRs are queued at once — not up to a fallback
@@ -1060,6 +1184,18 @@ client.onUpdate(api.settings.get, {}, (s) => {
   const changed = next?.model !== reviewerSettings?.model || next?.effort !== reviewerSettings?.effort
   reviewerSettings = next
   if (changed && next) log(`reviewer settings: model=${next.model} effort=${next.effort}`)
+})
+
+// The console's auto-triage toggle + model picker. The model is applied per
+// judgment spawn (triageSuggestion); the on/off switch needs no handling here —
+// toTriage itself goes empty when it's off.
+client.onUpdate(api.suggestedIssues.autoTriage, {}, (s) => {
+  const next = s ?? null
+  const changed =
+    next?.enabled !== autoTriageSettings?.enabled || next?.model !== autoTriageSettings?.model
+  autoTriageSettings = next
+  if (changed && next)
+    log(`auto-triage: ${next.enabled ? "on" : "off"} model=${next.model ?? `${TRIAGE_MODEL} (fallback)`}`)
 })
 
 // The console's house-rules editor. Applied per spawn (reviewPrompt), so like

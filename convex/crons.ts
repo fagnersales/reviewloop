@@ -33,4 +33,14 @@ crons.interval(
   {},
 )
 
+// Crash recovery for inbox auto-triage: release `triaging` claims whose worker
+// died mid-judgment (see TRIAGE_STALE_MS in suggestedIssues.ts), so the proposal
+// becomes claimable again instead of looking in-flight forever.
+crons.interval(
+  "requeue stale follow-up triage",
+  { minutes: 10 },
+  internal.suggestedIssues.requeueStaleTriage,
+  {},
+)
+
 export default crons

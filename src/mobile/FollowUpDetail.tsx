@@ -33,7 +33,10 @@ const BANNER: Record<
     text: "text-[#fcd34d]",
     bg: "bg-[#e3b341]/[0.08]",
     border: "border-[#e3b341]/[0.28]",
-    line: () => "Awaiting your decision. Approve or dismiss this proposal from the desktop console.",
+    line: (s) =>
+      s.triage === "kept" && s.triageReason
+        ? `Auto-review kept this — ${s.triageReason}`
+        : "Awaiting your decision. Approve or dismiss this proposal from the desktop console.",
   },
   approved: {
     icon: Check,
@@ -54,7 +57,10 @@ const BANNER: Record<
     text: "text-zinc-400",
     bg: "bg-inset",
     border: "border-edge2",
-    line: () => "Dismissed — kept as history, never opened.",
+    line: (s) =>
+      s.triage === "dropped" && s.triageReason
+        ? `Dropped by auto-review — ${s.triageReason}`
+        : "Dismissed — kept as history, never opened.",
   },
 }
 
@@ -147,6 +153,11 @@ export function MobileFollowUpDetail({
         </>
       ) : (
         <>
+          {s.status === "suggested" && s.triage === "kept" && s.triageReason && (
+            <p className="mb-3 text-[12.5px] leading-relaxed text-[#86efac]">
+              Auto-review kept this — {s.triageReason}
+            </p>
+          )}
           {s.status === "suggested" && (
             <div className="flex items-center gap-[9px]">
               <button
@@ -179,7 +190,9 @@ export function MobileFollowUpDetail({
           )}
           {s.status === "dismissed" && (
             <div className="flex items-center justify-between gap-2.5">
-              <span className="text-[13px] text-zinc-600">Dismissed</span>
+              <span className="min-w-0 text-[13px] text-zinc-600">
+                {s.triage === "dropped" ? "Dropped by auto-review" : "Dismissed"}
+              </span>
               <button type="button" onClick={() => actions.undo(s)} className={UNDO_BTN}>
                 Restore
               </button>
