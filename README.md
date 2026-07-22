@@ -175,17 +175,19 @@ minutes to hours) also gets its own process so it never starves the fast reviews
 
 ### Two human gates protect the cascade
 
-Nothing auto-builds without two deliberate human decisions upstream: a human **opens**
-an agent-proposed follow-up (or files an issue by hand), then **promotes** it to
-`ready-for-agent`. Only then does the solver act. The label is the single trigger —
-so manually-triaged issues work too, not just agent-proposed ones.
+Nothing auto-builds without a deliberate human decision upstream: a follow-up is
+**opened** as an issue (by a human — or by Auto-review, below), and a human then
+**promotes** it to `ready-for-agent`. Only then does the solver act. The label is
+the single trigger — so manually-triaged issues work too, not just agent-proposed
+ones.
 
-The optional **Auto-review** toggle on the Follow-ups view sits *before* both
-gates, and only ever filters: when it's on, the worker runs a one-shot `claude -p`
-judgment over each new inbox proposal and either **drops** it (dismissed with the
-agent's one-line reason — Restore brings it back, and a restored row is marked
-kept so the agent can't re-drop it) or **keeps** it for you. It never approves,
-opens, or promotes anything, so both human brakes stay in place.
+The optional **Auto-review** control (on the nav rail) hands gate 1 to an agent:
+when it's on, the worker runs a one-shot `claude -p` judgment over each new inbox
+proposal and either **drops** it (dismissed with the agent's one-line reason —
+Restore brings it back, and a restored row is marked kept so the agent can't
+re-drop it) or **keeps** it, which auto-approves it so the worker files the
+GitHub issue at `needs-triage`. Gate 2 — promoting an issue to `ready-for-agent`
+— is still always a human decision, so nothing auto-builds either way.
 
 ### The issue label lifecycle
 

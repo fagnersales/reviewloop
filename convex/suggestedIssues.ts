@@ -341,11 +341,12 @@ export const recordWorkerError = mutation({
 })
 
 // ── auto-triage: the inbox's optional agent gatekeeper ────────────────────────
-// Off by default. When the operator flips it on (the Follow-ups view toggle),
-// the worker judges each untriaged `suggested` row with a one-shot `claude -p`
-// and either drops it (dismissed, agent as decider) or keeps it for the human.
-// Deliberately filter-only: a kept row still needs the normal human "Open it" —
-// gate 1 and gate 2 stay human (see the lifecycle note in schema.ts). Turning
+// Off by default. When the operator flips it on (the rail's Auto-review
+// control), the worker judges each untriaged `suggested` row with a one-shot
+// `claude -p` and decides gate 1 itself: drop (dismissed, agent as decider) or
+// keep — which auto-approves the row so the worker files it on GitHub, as if a
+// human had clicked "Open it". Only gate 2 (promoting the opened issue to
+// ready-for-agent, which is what hands it to the solver) stays human. Turning
 // the toggle on also sweeps the *existing* backlog: any suggested row without a
 // verdict becomes claimable, not just ones that arrive later.
 
@@ -417,6 +418,10 @@ export const claimTriage = mutation({
 // Worker reports the verdict. A late finish (claim lost to the stale cron, or a
 // human decided while the run was in flight) is dropped — the human always wins:
 // a row no longer `suggested` just gets its claim marker cleared, verdict unused.
+// A "keep" is an auto-approve: the row goes straight to `approved` and the
+// worker's approvedToOpen subscription files it on GitHub, exactly as if a human
+// had clicked "Open it" (fresh attempts budget included). Promotion to
+// ready-for-agent (gate 2) stays human.
 export const finishTriage = mutation({
   args: {
     id: v.id("suggestedIssues"),
@@ -439,6 +444,11 @@ export const finishTriage = mutation({
         triagedAt: now,
         triagedBy: by,
         triageReason: reason,
+        status: "approved",
+        decidedAt: now,
+        decidedBy: by,
+        attempts: 0,
+        error: undefined,
       })
     } else {
       await ctx.db.patch(id, {
@@ -473,6 +483,25 @@ export const recordTriageError = mutation({
       triageAttempts: (row.triageAttempts ?? 0) + 1,
     })
     return null
+  },
+})
+
+// Admin utility (run via `npx convex run suggestedIssues:wipeInbox`): delete
+// every suggestion row — proposals, history, the lot. Settings are untouched.
+// Internal on purpose: destructive, never callable from the public console.
+// Batched so a large history stays within transaction limits.
+export const wipeInbox = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    let deleted = 0
+    for (;;) {
+      const rows = await ctx.db.query("suggestedIssues").take(200)
+      if (rows.length === 0) break
+      for (const r of rows) await ctx.db.delete(r._id)
+      deleted += rows.length
+    }
+    return deleted
   },
 })
 

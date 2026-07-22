@@ -120,17 +120,20 @@ export const triageLabel = v.union(
 
 // Auto-triage of the inbox (opt-in, see the `triageSettings` table): when the
 // operator enables it, the worker runs a one-shot `claude -p` judgment over each
-// new `suggested` row and either drops it (dismissed, with the agent as decider)
-// or keeps it — a kept row still awaits the normal human gate 1, so auto-triage
-// only ever *filters* the inbox, it never approves/opens anything. The marker
+// new `suggested` row and decides gate 1 itself — drop it (dismissed, with the
+// agent as decider) or keep it, which auto-approves the row so the worker files
+// it on GitHub as if a human had clicked "Open it". Gate 2 (promoting the opened
+// issue to ready-for-agent) stays human, so nothing auto-builds. The marker
 // lives beside `status`, not inside it, because triage is orthogonal to the
 // suggestion lifecycle:
 //   (absent)  : never considered (auto-triage off, or not picked up yet)
 //   triaging  : a worker claimed it and the judgment run is in flight
-//   kept      : the agent decided it's worth a human's attention — stays suggested
+//   kept      : the agent decided it's worth tracking (status flips to approved
+//               in the same write; the worker then opens the GitHub issue)
 //   dropped   : the agent dismissed it (status flips to dismissed in the same
-//               write; a human Restore flips it back and stamps `kept` so the
-//               agent can't re-drop what a human chose to keep)
+//               write; a human Restore flips it back to suggested and stamps
+//               `kept` — without re-approving — so the agent can't re-drop
+//               what a human chose to keep)
 export const triageState = v.union(
   v.literal("triaging"),
   v.literal("kept"),

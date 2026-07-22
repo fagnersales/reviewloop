@@ -66,7 +66,7 @@ function FuRow({ s, selected, onSelect }: { s: Suggestion; selected: boolean; on
           {repoShort(s.repo)}  #{s.sourcePrNumber}
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
-          {s.status === "suggested" && s.triage === "kept" && (
+          {s.status !== "dismissed" && s.triage === "kept" && (
             <Sparkles className="size-2.5 text-[#86efac]" aria-label="Kept by auto-review" />
           )}
           <span className={FU_CAT_TEXT[s.category]}>{s.category}</span>
@@ -125,7 +125,7 @@ function FuDetail({ s, actions }: { s: Suggestion; actions: FollowUpActions }) {
             Auto-review is deciding…
           </div>
         )}
-        {s.status === "suggested" && s.triage === "kept" && s.triageReason && (
+        {s.status !== "dismissed" && s.triage === "kept" && s.triageReason && (
           <div className="mb-3 flex items-start gap-2 rounded border border-[#3fb950]/25 bg-[#3fb950]/[0.06] px-3 py-2 text-xs leading-relaxed text-[#86efac]">
             <Sparkles className="mt-px size-3.5 shrink-0" />
             <span>Auto-review kept this — {s.triageReason}</span>

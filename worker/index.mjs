@@ -1012,14 +1012,16 @@ async function processDraft(row) {
 // ── inbox auto-triage (keep/drop a suggested follow-up) ──────────────────────
 // When the console's auto-review toggle is on, suggestedIssues.toTriage streams
 // untriaged proposals here and this worker — which holds the CLI — asks a model
-// to judge each one. DROP dismisses it (the human can still Restore); KEEP marks
-// it worth the human's attention and leaves it in the inbox. Like the rule-draft
-// transforms: a pure text judgment, no clone, no tools, one verdict out.
+// to judge each one. DROP dismisses it (the human can still Restore); KEEP
+// auto-approves it, so this same worker then files the GitHub issue via
+// approvedToOpen — gate 1 is the agent's call, promotion (gate 2) stays human.
+// Like the rule-draft transforms: a pure text judgment, no clone, no tools,
+// one verdict out.
 
 function triagePrompt(row) {
   const files =
     row.files && row.files.length ? `\nFiles it says to touch: ${row.files.join(", ")}` : ""
-  return `You are triaging the follow-up inbox of an automated code-review console. While building the PR below, an agent proposed the follow-up issue below. Decide whether it deserves a place in the human operator's inbox (KEEP) or should be dropped (DROP).
+  return `You are triaging the follow-up inbox of an automated code-review console. While building the PR below, an agent proposed the follow-up issue below. Decide: KEEP files it as a real GitHub issue on the repo, DROP dismisses it. Your verdict acts directly — no human reviews it in between.
 
 DROP a proposal that a busy maintainer would not want filed as an issue:
 - too vague to act on, or pure speculation with no concrete change
@@ -1027,7 +1029,7 @@ DROP a proposal that a busy maintainer would not want filed as an issue:
 - something the source PR itself already resolved, or that only restates it
 - process chatter dressed up as work ("consider revisiting…", "maybe explore…")
 
-KEEP a proposal a maintainer would plausibly want to schedule: a real bug or risk, a disclosed limitation that matters, or a concrete, scoped improvement. When genuinely unsure, KEEP — a wrong drop hides work from the human; a wrong keep costs them one glance.
+KEEP a proposal a maintainer would plausibly want tracked as an issue: a real bug or risk, a disclosed limitation that matters, or a concrete, scoped improvement. When genuinely unsure, KEEP — a wrong drop hides work from the maintainer; a wrong keep costs one issue they can close.
 
 Proposal:
 - Title: ${row.title}

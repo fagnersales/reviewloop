@@ -126,5 +126,8 @@ Operator/agent notes if you touch this:
   means "waiting, claimable": `ready-for-agent` →(claim)→ `agent-in-progress`
   →(PR opened)→ `ready-for-human`, or →(failed)→ `agent-failed`. A failed solve does
   **not** auto-retry (the reconcile keys on `ready-for-agent`); re-label to retry.
-- Trigger gates are deliberate: a human opens a follow-up, then promotes it to
-  `ready-for-agent`. Don't add an auto-cascade — preserve the two human brakes.
+- Trigger gates are deliberate. Gate 1 (open a follow-up as an issue) is human
+  by default, but the operator can hand it to the inbox's opt-in Auto-review
+  agent (rail control), which keeps→files or drops each proposal. Gate 2
+  (promote to `ready-for-agent`) is **always human** — never auto-promote; that
+  brake is what keeps the solver from cascading.
