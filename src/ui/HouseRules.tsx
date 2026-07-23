@@ -18,6 +18,7 @@ import { cn } from "../lib/cn"
 import { ago } from "../lib/format"
 import { useReadOnly } from "../read-only"
 import { FilterDropdown, type FilterOption } from "./FilterDropdown"
+import { tip } from "./Tooltip"
 
 type Level = "block" | "warn"
 type DraftMode = "rewrite" | "shorten"
@@ -119,7 +120,7 @@ function LevelBadge({ rule, onToggle }: { rule: Rule; onToggle: () => void }) {
     <button
       type="button"
       onClick={onToggle}
-      title={`Switch to ${rule.level === "block" ? "warn" : "block"}`}
+      {...tip(`Switch to ${rule.level === "block" ? "warn" : "block"}`)}
       className={cn(
         "mt-[3px] shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.08em] transition-colors",
         LEVEL_TONE[rule.level],
@@ -211,12 +212,12 @@ function RuleRow({ rule }: { rule: Rule }) {
       <button
         type="button"
         onClick={startEdit}
-        title="Edit rule"
+        {...tip("Edit rule")}
         className="min-w-0 flex-1 break-words text-left text-[13px] leading-relaxed text-zinc-300"
       >
         {rule.text}
         <span
-          title={new Date(rule.updatedAt).toLocaleString()}
+          {...tip(new Date(rule.updatedAt).toLocaleString())}
           className="ml-2 font-mono text-[9.5px] text-zinc-700"
         >
           {ago(rule.updatedAt, Date.now())}
@@ -226,7 +227,7 @@ function RuleRow({ rule }: { rule: Rule }) {
         <button
           type="button"
           onClick={startEdit}
-          title="Edit rule"
+          {...tip("Edit rule")}
           aria-label={`Edit rule: ${rule.text}`}
           className="text-zinc-600 transition-colors hover:text-zinc-300"
         >
@@ -235,7 +236,7 @@ function RuleRow({ rule }: { rule: Rule }) {
         <button
           type="button"
           onClick={() => void remove({ id: rule.id })}
-          title="Remove rule"
+          {...tip("Remove rule")}
           aria-label={`Remove rule: ${rule.text}`}
           className="text-zinc-600 transition-colors hover:text-zinc-300"
         >
@@ -453,7 +454,7 @@ function Composer({ rules, repos }: { rules: Rule[]; repos: string[] }) {
           type="button"
           disabled={busy || !draft.trim()}
           onClick={() => void runTransform("rewrite")}
-          title="Rewrite more concisely (AI)"
+          {...tip("Rewrite more concisely (AI)")}
           className="flex flex-1 items-center justify-center gap-1.5 rounded-[6px] border border-edge2 bg-inset px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-zinc-300 transition-colors enabled:hover:border-edgehi enabled:hover:text-zinc-100 disabled:opacity-40"
         >
           <Sparkles className="size-3" />
@@ -463,7 +464,7 @@ function Composer({ rules, repos }: { rules: Rule[]; repos: string[] }) {
           type="button"
           disabled={busy || !draft.trim()}
           onClick={() => void runTransform("shorten")}
-          title="Shorten to the fewest words (AI)"
+          {...tip("Shorten to the fewest words (AI)")}
           className="flex flex-1 items-center justify-center gap-1.5 rounded-[6px] border border-edge2 bg-inset px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.08em] text-zinc-300 transition-colors enabled:hover:border-edgehi enabled:hover:text-zinc-100 disabled:opacity-40"
         >
           <Scissors className="size-3" />
@@ -504,7 +505,7 @@ function Composer({ rules, repos }: { rules: Rule[]; repos: string[] }) {
         type="button"
         disabled={!draft.trim() || draft.length > MAX_LEN}
         onClick={() => void submit()}
-        title="Add rule (⌘↵)"
+        {...tip("Add rule", { keys: "⌘ ↵" })}
         className="mt-2.5 w-full rounded-[6px] border border-edge bg-inset px-3 py-2 font-mono text-[11px] text-zinc-300 transition-colors hover:border-edge2 hover:text-zinc-100 disabled:opacity-40"
       >
         Add rule
@@ -567,13 +568,13 @@ function RulesPage({ onClose }: { onClose: () => void }) {
           </p>
         </div>
         <span className="flex-1" />
-        <span title={`Up to ${MAX_RULES} rules`} className="shrink-0 font-mono text-[11px] text-zinc-600">
+        <span {...tip(`Up to ${MAX_RULES} rules`)} className="shrink-0 font-mono text-[11px] text-zinc-600">
           {count}/{MAX_RULES}
         </span>
         <button
           type="button"
           onClick={onClose}
-          title="Close (Esc)"
+          {...tip("Close", { keys: "⎋" })}
           aria-label="Close house rules"
           className="flex size-8 shrink-0 items-center justify-center rounded-md border border-edge text-zinc-500 transition-colors hover:border-edge2 hover:text-zinc-200"
         >
@@ -600,7 +601,10 @@ function RulesPage({ onClose }: { onClose: () => void }) {
                   <div key={g.repo?.toLowerCase() ?? "all"}>
                     <div className="mb-1.5 flex items-center gap-2 px-2.5 font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">
                       {g.repo ? <Target className="size-3" /> : <Globe className="size-3" />}
-                      <span title={g.repo}>{g.repo ? groupLabel(g.repo) : "All repos"}</span>
+                      {/* the group header truncates the repo — the full name is the tip */}
+                      <span {...(g.repo ? tip(g.repo) : {})}>
+                        {g.repo ? groupLabel(g.repo) : "All repos"}
+                      </span>
                       <span className="text-zinc-700">{g.rules.length}</span>
                     </div>
                     <ul className="m-0 flex list-none flex-col gap-0.5 p-0">
@@ -633,7 +637,7 @@ export function HouseRules() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title="House rules"
+        {...tip("House rules", { place: "right" })}
         aria-label="House rules"
         className={cn(
           "relative flex size-10 items-center justify-center rounded-md border transition-colors",

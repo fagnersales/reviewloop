@@ -15,6 +15,7 @@ import { Check, Sparkles } from "lucide-react"
 import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
 import { useReadOnly } from "../read-only"
+import { tip } from "./Tooltip"
 
 type TriageModel = "fable" | "opus" | "sonnet" | "haiku"
 
@@ -57,7 +58,13 @@ export function AutoReview() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        title={enabled ? `Auto-review on · ${model}` : "Auto-review off"}
+        {...(enabled
+          ? tip("Auto-review on", {
+              body: `Triaging the follow-ups inbox with ${model}.`,
+              tone: "ok",
+              place: "right",
+            })
+          : tip("Auto-review off", { place: "right" }))}
         aria-label="Auto-review"
         className={cn(
           "relative flex size-10 items-center justify-center rounded-md border transition-colors",

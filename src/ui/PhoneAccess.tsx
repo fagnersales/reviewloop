@@ -8,6 +8,7 @@ import { QRCodeSVG } from "qrcode.react"
 import { Check, Copy, Smartphone } from "lucide-react"
 import { cn } from "../lib/cn"
 import { IS_LOCAL_CONSOLE, LOCAL_PASSCODE, buildDeepLink } from "../access"
+import { tip } from "./Tooltip"
 
 export function PhoneAccess() {
   const [open, setOpen] = useState(false)
@@ -30,7 +31,7 @@ export function PhoneAccess() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        title="Phone access"
+        {...tip("Phone access", { place: "right" })}
         aria-label="Phone access"
         className={cn(
           "relative flex size-10 items-center justify-center rounded-md border transition-colors",
@@ -94,7 +95,7 @@ function CopyField({ label, value, display }: { label: string; value: string; di
         <button
           type="button"
           onClick={copy}
-          title={`Copy ${label.toLowerCase()}`}
+          {...tip(`Copy ${label.toLowerCase()}`)}
           aria-label={`Copy ${label.toLowerCase()}`}
           className="flex size-[30px] shrink-0 items-center justify-center rounded-[5px] border border-edge bg-[#0d0d0f] text-zinc-500 transition-colors hover:border-edge2 hover:text-zinc-300"
         >

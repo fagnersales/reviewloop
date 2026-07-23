@@ -18,6 +18,7 @@ import { api } from "../../convex/_generated/api"
 import type { Id } from "../../convex/_generated/dataModel"
 import { cn } from "../lib/cn"
 import { useReadOnly } from "../read-only"
+import { tip } from "./Tooltip"
 
 type Checkout = {
   _id: Id<"solverCheckouts">
@@ -44,14 +45,19 @@ function VerdictDot({ c }: { c: Checkout }) {
   if (c.provision === "requested")
     return (
       <span
-        title="queued — waiting for the solver on this host to provision it"
+        {...tip("Queued to provision", {
+          body: "Waiting for the solver on this host to pick it up.",
+        })}
         className="size-[7px] shrink-0 animate-pulse rounded-full bg-zinc-500"
       />
     )
   if (c.provision === "failed")
     return (
       <span
-        title={c.provisionError || "provisioning failed"}
+        {...tip("Provisioning failed", {
+          body: c.provisionError || "The solver couldn’t prepare this checkout.",
+          tone: "fail",
+        })}
         className="size-[7px] shrink-0 rounded-full bg-[#f85149]"
       />
     )
@@ -69,7 +75,7 @@ function VerdictDot({ c }: { c: Checkout }) {
       : c.status === "invalid"
         ? c.statusDetail || "invalid"
         : "not validated yet — is the solver running on this host?"
-  return <span title={title} className={cn("size-[7px] shrink-0 rounded-full", tone)} />
+  return <span {...tip(title)} className={cn("size-[7px] shrink-0 rounded-full", tone)} />
 }
 
 // The row's second line: live provisioning activity when there is any, the
@@ -189,7 +195,7 @@ function CheckoutForm({
         {existing && existing.provision !== "provisioning" && existing.provision !== "requested" && (
           <button
             type="button"
-            title="Provision again — re-clone/re-prepare this checkout"
+            {...tip("Provision again — re-clone/re-prepare this checkout")}
             aria-label="Provision again"
             onClick={() => {
               void reprovision({ id: existing._id })
@@ -203,7 +209,7 @@ function CheckoutForm({
         {existing && (
           <button
             type="button"
-            title="Remove checkout"
+            {...tip("Remove checkout")}
             aria-label="Remove checkout"
             onClick={() => {
               void removeRow({ id: existing._id })
@@ -253,7 +259,13 @@ export function SolverCheckouts() {
       <button
         type="button"
         onClick={() => (open ? close() : setOpen(true))}
-        title={broken ? "Solver checkouts — one is invalid" : "Solver checkouts"}
+        {...(broken
+          ? tip("Solver checkouts", {
+              body: "One checkout is invalid — the solver can’t build against it.",
+              tone: "fail",
+              place: "right",
+            })
+          : tip("Solver checkouts", { place: "right" }))}
         aria-label="Solver checkouts"
         className={cn(
           "relative flex size-10 items-center justify-center rounded-md border transition-colors",
@@ -301,7 +313,7 @@ export function SolverCheckouts() {
                   </span>
                   <button
                     type="button"
-                    title={`Add checkout on ${hostShort(host)}`}
+                    {...tip(`Add checkout on ${hostShort(host)}`)}
                     aria-label={`Add checkout on ${hostShort(host)}`}
                     onClick={() => setEditing(editing === addKey ? null : addKey)}
                     className="flex size-5 items-center justify-center rounded-[4px] text-zinc-600 transition-colors hover:bg-railsel/60 hover:text-zinc-300"

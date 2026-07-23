@@ -19,6 +19,7 @@ import {
 } from "lucide-react"
 import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
+import { tip } from "../ui/Tooltip"
 import { longDur } from "../lib/format"
 
 export type Pr = FunctionReturnType<typeof api.reviews.prs>[number]
@@ -402,7 +403,7 @@ export function ModelPill({ pass }: { pass?: Pass }) {
   if (!pass?.model) return null
   return (
     <span
-      title="Model · effort that produced this review"
+      {...tip("Model · effort that produced this review")}
       className="inline-flex items-center gap-1.5 rounded border border-edge bg-inset px-2 py-[3px] font-mono text-[11px] text-zinc-500"
     >
       <ClaudeMark className="size-[11px] shrink-0 text-[#d97757]" />

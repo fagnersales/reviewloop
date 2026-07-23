@@ -74,6 +74,200 @@ body {
   }
 }
 
+/* ── Tooltip: the "tinted surface" design (src/ui/Tooltip.tsx) ──────────────
+   Two tiers from one node. **Plain** is a quiet hairline chip, always neutral —
+   it covers the ~40 icon buttons and dense meta cells that just need a name.
+   **Rich** (a tip that carries a body) composites its tone into the card's own
+   material: a low-alpha wash over the surface, a border mixed toward the same
+   hue, the title in the tone's light shade. Nothing is applied on top — there
+   is deliberately no coloured rule, stripe or bar. `neutral` defines no --wash
+   at all, so every tinted rule simply doesn't match and the default stays
+   genuinely untinted.
+
+   No transitions or keyframes here on purpose: show/hide are instant paints.
+   The only timing is the integer show-delay in the engine. */
+.rl-tip {
+  /* the tint recipe — the whole decoration language, in three numbers */
+  --wash-top: 9%; /* tone → surface, at the top of the card */
+  --wash-bot: 4%; /* tone → surface, at the bottom */
+  --wash-edge: 34%; /* tone → border */
+
+  --tip-bg: #0e0e11; /* base material */
+  --tip-border: #2a2a30; /* neutral edge, the un-tinted reference */
+
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 9000;
+  pointer-events: none;
+  display: none;
+  filter: drop-shadow(0 10px 22px rgba(0, 0, 0, 0.6));
+}
+.rl-tip[data-on] {
+  display: block;
+}
+
+.rl-tip-card {
+  position: relative;
+  z-index: 1;
+  padding: 9px 12px;
+  max-width: 268px;
+  text-align: left;
+  background: var(--tip-bg);
+  border: 1px solid var(--tip-border);
+  border-radius: 6px;
+  box-shadow:
+    0 10px 26px -6px rgba(0, 0, 0, 0.82),
+    0 2px 6px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.rl-tip[data-tone="ok"] {
+  --wash: #3fb950;
+  --wash-title: #86efac;
+}
+.rl-tip[data-tone="fail"] {
+  --wash: #f85149;
+  --wash-title: #fca5a5;
+}
+.rl-tip[data-tone="merged"] {
+  --wash: #a371f7;
+  --wash-title: #d8b4fe;
+}
+.rl-tip[data-tone="agent"] {
+  --wash: #818cf8;
+  --wash-title: #c7d2fe;
+}
+
+.rl-tip[data-tone]:not([data-tone="neutral"]) .rl-tip-card {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--wash) var(--wash-top), var(--tip-bg)) 0%,
+    color-mix(in srgb, var(--wash) var(--wash-bot), var(--tip-bg)) 100%
+  );
+  border-color: color-mix(in srgb, var(--wash) var(--wash-edge), var(--tip-border));
+}
+.rl-tip[data-tone]:not([data-tone="neutral"]) .rl-tip-title {
+  color: var(--wash-title);
+}
+
+.rl-tip-line {
+  display: block;
+}
+.rl-tip-title {
+  display: block;
+  font-size: 12px;
+  font-weight: 550;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  color: #f4f4f5;
+}
+.rl-tip-body {
+  margin-top: 4px;
+  max-width: 244px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #a1a1aa;
+}
+.rl-tip-body:empty {
+  display: none;
+}
+.rl-tip-keys {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--wash, #1d1d21) 12%, #1d1d21);
+}
+.rl-tip-keys:empty {
+  display: none;
+}
+.rl-tip-klabel {
+  margin-right: 2px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #52525b;
+}
+.rl-tip-inlinekeys {
+  display: none;
+}
+
+/* ── plain tier — a label, correct in its own right, never an amputated card */
+.rl-tip[data-tier="plain"] .rl-tip-card {
+  padding: 5px 9px;
+  border-radius: 5px;
+  max-width: 246px;
+}
+.rl-tip[data-tier="plain"] .rl-tip-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rl-tip[data-tier="plain"] .rl-tip-title {
+  font-size: 11.5px;
+  font-weight: 450;
+  line-height: 1.45;
+  letter-spacing: 0;
+  color: #e4e4e7;
+}
+.rl-tip[data-tier="plain"] .rl-tip-body,
+.rl-tip[data-tier="plain"] .rl-tip-keys {
+  display: none;
+}
+.rl-tip[data-tier="plain"] .rl-tip-inlinekeys {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+}
+.rl-tip[data-tier="plain"] .rl-tip-inlinekeys:empty {
+  display: none;
+}
+
+.rl-tip-key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid #2a2a30;
+  border-bottom-color: #18181b;
+  border-radius: 4px;
+  background: #111114;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  color: #d4d4d8;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+.rl-tip[data-tier="plain"] .rl-tip-key {
+  min-width: 16px;
+  height: 15px;
+  font-size: 9.5px;
+}
+
+/* the notch is cut from the card's own material, tint included */
+.rl-tip-arrow {
+  position: absolute;
+  z-index: 0;
+  width: 9px;
+  height: 9px;
+  background: var(--tip-bg);
+  border: 1px solid var(--tip-border);
+  transform: rotate(45deg);
+}
+.rl-tip[data-tier="plain"] .rl-tip-arrow {
+  width: 7px;
+  height: 7px;
+}
+.rl-tip[data-tone]:not([data-tone="neutral"]) .rl-tip-arrow {
+  background: color-mix(in srgb, var(--wash) 7%, var(--tip-bg));
+  border-color: color-mix(in srgb, var(--wash) var(--wash-edge), var(--tip-border));
+}
+
 /* Status-dot pulse for live states (reviewing / solving / in-progress) and the
    soft entrance for the review-loop event detail. */
 @keyframes rl-pulse {

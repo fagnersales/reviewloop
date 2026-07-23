@@ -55,6 +55,7 @@ import { HouseRules } from "./ui/HouseRules"
 import { ReviewerSettings } from "./ui/ReviewerSettings"
 import { AutoReview } from "./ui/AutoReview"
 import { SolverCheckouts } from "./ui/SolverCheckouts"
+import { TooltipLayer, tip } from "./ui/Tooltip"
 import { MobileApp } from "./mobile/MobileApp"
 import { useReadOnly } from "./read-only"
 import { useView } from "./lib/view"
@@ -127,7 +128,7 @@ function AddRepo({ onAdd }: { onAdd: (repo: string) => Promise<AddResult> }) {
     return (
       <button
         type="button"
-        title="Add repository"
+        {...tip("Add repository")}
         aria-label="Add repository"
         onClick={() => setAdding(true)}
         className="flex size-8 shrink-0 items-center justify-center rounded-[5px] border border-edge bg-[#0d0d0f] text-zinc-500 transition-colors hover:border-edge2 hover:text-zinc-300"
@@ -623,7 +624,7 @@ function MetaTiming({ pr }: { pr: Pr }) {
   if (!timing) return null
   const verb = pr.prState === "merged" ? "merged" : pr.prState === "closed" ? "closed" : "open"
   return (
-    <span className="flex items-center gap-1" title={timing.title}>
+    <span className="flex items-center gap-1" {...tip(timing.title)}>
       <Clock3 className="size-[11px]" />
       {verb} {timing.span}
     </span>
@@ -682,7 +683,9 @@ function MergeButton({ pr }: { pr: Pr }) {
     <button
       type="button"
       onClick={() => setConfirming(true)}
-      title={pr.mergeError ? `Last merge attempt failed: ${pr.mergeError}` : "Squash-merge and delete the branch"}
+      {...(pr.mergeError
+        ? tip("Last merge attempt failed", { body: pr.mergeError, tone: "fail" })
+        : tip("Squash-merge and delete the branch"))}
       className={cn(
         "inline-flex shrink-0 items-center gap-1.5 rounded-[5px] border px-2.5 py-1.5 text-xs font-medium transition-colors",
         pr.mergeError
@@ -812,7 +815,7 @@ function ReviewDetail({ pr, hasPrs, isAll }: { pr: Pr | null; hasPrs: boolean; i
               </a>
               <MetaTiming pr={pr} />
               {hasDiff && (
-                <span className="inline-flex items-center gap-1.5" title="Lines changed across this PR">
+                <span className="inline-flex items-center gap-1.5" {...tip("Lines changed across this PR")}>
                   <span className="text-[#86efac]">+{addTotal}</span>
                   <span className="text-[#fca5a5]">−{delTotal}</span>
                 </span>
@@ -825,7 +828,7 @@ function ReviewDetail({ pr, hasPrs, isAll }: { pr: Pr | null; hasPrs: boolean; i
               href={pr.prUrl}
               target="_blank"
               rel="noreferrer"
-              title="Open PR on GitHub"
+              {...tip("Open PR on GitHub")}
               aria-label="Open PR on GitHub"
               className="flex size-8 shrink-0 items-center justify-center rounded-[5px] border border-edge text-zinc-500 transition-colors hover:border-edge2 hover:text-zinc-200"
             >
@@ -964,7 +967,7 @@ function ReviewConsole({
             {query && (
               <button
                 type="button"
-                title="Clear search"
+                {...tip("Clear search", { keys: "⎋" })}
                 aria-label="Clear search"
                 onClick={() => setQuery("")}
                 className="flex text-zinc-600 hover:text-zinc-300"
@@ -983,7 +986,7 @@ function ReviewConsole({
               type="button"
               onClick={() => setOpenOnly((v) => !v)}
               aria-pressed={openOnly}
-              title={openOnly ? "Showing open PRs only — click to show all" : "Show only open PRs"}
+              {...tip(openOnly ? "Showing open PRs only — click to show all" : "Show only open PRs")}
               className={cn(
                 "inline-flex items-center gap-1 rounded border px-[7px] py-[3px] text-[10px] font-medium normal-case tracking-normal transition-colors",
                 openOnly
@@ -1052,7 +1055,7 @@ function RailBtn({
     <button
       type="button"
       onClick={onClick}
-      title={label}
+      {...tip(label, { place: "right" })}
       aria-label={label}
       aria-pressed={active}
       className={cn(
@@ -1123,6 +1126,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-canvas text-zinc-200">
+      <TooltipLayer />
       {/* slim icon rail: Reviews ⇄ Solves ⇄ Follow-ups, phone access pinned to the foot */}
       <nav className="flex w-14 shrink-0 flex-col items-center gap-2.5 border-r border-line bg-panel py-3.5">
         <NavLogo />

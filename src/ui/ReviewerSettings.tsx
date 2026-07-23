@@ -15,6 +15,7 @@ import { Cpu } from "lucide-react"
 import { api } from "../../convex/_generated/api"
 import { cn } from "../lib/cn"
 import { useReadOnly } from "../read-only"
+import { tip } from "./Tooltip"
 
 type Model = "fable" | "opus" | "sonnet" | "haiku"
 type Effort = "low" | "medium" | "high" | "xhigh" | "max"
@@ -113,7 +114,7 @@ export function ReviewerSettings() {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        title="Reviewer model & effort"
+        {...tip("Reviewer model & effort", { place: "right" })}
         aria-label="Reviewer model & effort"
         className={cn(
           "relative flex size-10 items-center justify-center rounded-md border transition-colors",
