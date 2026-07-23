@@ -1,15 +1,11 @@
 {
-  "//": "Config for the autonomous SOLVER worker (worker/solver.mjs). Copy this to worker/solver.config.json (gitignored — paths are host-specific) and fill in `checkouts`. convexUrl may be left empty — the solver falls back to VITE_CONVEX_URL in ../.env.local. Override the checkout map via the REVIEWLOOP_SOLVER_CHECKOUTS env var (JSON). Other env: REVIEWLOOP_CONVEX_URL, CLAUDE_BIN.",
-  "//checkouts": "Map each watched `owner/name` to a REAL, configured local checkout the solver may build in. Use DEDICATED solver-owned clones, not your personal ones: the reviewloop-feature worktree symlinks node_modules back to the parent, so a solve doing `npm install` would mutate your deps, and stale worktrees would litter a repo you use. One-time setup per repo: `gh repo clone <slug> <path> && cd <path> && npm install && cp <your-clone>/.env.local .env.local`. A leading ~ is expanded. Slugs are matched case-insensitively. A ready-for-agent issue on a repo with no entry here is claimed and FAILED with a clear reason (never silently stalled).",
+  "//": "Optional tuning config for the autonomous SOLVER worker (worker/solver.mjs). Copy this to worker/solver.config.json (gitignored) only if you want to override a default — the solver runs fine without it. convexUrl may be left empty — the solver falls back to VITE_CONVEX_URL in ../.env.local. Env: REVIEWLOOP_CONVEX_URL, CLAUDE_BIN.",
+  "//checkouts": "The repo→checkout registry does NOT live here. It lives in Convex (`solverCheckouts`, keyed by this machine's hostname) and is edited from the console's Solver checkouts rail panel. The row is only the pointer — you still prepare the clone on this machine. Use DEDICATED solver-owned clones, not your personal ones: the reviewloop-feature worktree symlinks node_modules back to the parent, so a solve doing `npm install` would mutate your deps, and stale worktrees would litter a repo you use. One-time setup per repo: `gh repo clone <slug> <path> && cd <path> && npm install && cp <your-clone>/.env.local .env.local`, then register <path> in the console. A ready-for-agent issue on a repo with no registered checkout is claimed and FAILED with a clear reason (never silently stalled).",
   "convexUrl": "",
   "model": "opus",
   "claudeBin": "claude",
   "concurrency": 1,
   "solveTimeoutMin": 180,
   "maxFixRounds": 3,
-  "fallbackReconcileMin": 20,
-  "checkouts": {
-    "your-user/some-watched-repo": "~/solver-checkouts/some-watched-repo",
-    "your-user/another-repo": "~/solver-checkouts/another-repo"
-  }
+  "fallbackReconcileMin": 20
 }

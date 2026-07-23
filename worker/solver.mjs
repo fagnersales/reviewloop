@@ -21,8 +21,10 @@
 //   1. Building needs what git does NOT carry — `.env.local` (secrets, the live
 //      backend URL), `node_modules`, build caches — so a solve must run in a REAL,
 //      configured local checkout, not the review worker's throwaway clone. The
-//      repo→path registry is host-specific local config (worker/solver.config.json),
-//      never Convex (the dashboard stays host-agnostic).
+//      repo→path registry lives in Convex (`solverCheckouts`), keyed by HOSTNAME
+//      so paths stay host-specific: this worker subscribes to its own hostname's
+//      rows only, and the console is where the map is edited. The row is just the
+//      pointer — the clone it names still has to be prepared on this machine.
 //   2. A solve runs for tens of minutes to hours; its own process + budget keeps a
 //      long solve from starving the fast, cheap reviews.
 //
@@ -50,9 +52,9 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // ── config ───────────────────────────────────────────────────────────────────
-// Solver-specific config lives in its own file (worker/solver.config.json,
-// gitignored) — the repo→checkout registry is host-specific, so it must not live
-// in Convex. A committed worker/solver.config.example.json documents the shape.
+// Tuning knobs live in worker/solver.config.json (gitignored, optional — these
+// defaults stand on their own). The repo→checkout registry is NOT here: it lives
+// in Convex (`solverCheckouts`, edited from the console), keyed by hostname.
 function loadConfig() {
   const defaults = {
     convexUrl: "",
@@ -62,25 +64,12 @@ function loadConfig() {
     solveTimeoutMin: 180, // a whole build + internal review/auto-fix loop
     maxFixRounds: 3,
     fallbackReconcileMin: 20,
-    checkouts: {}, // { "owner/name": "/abs/path/to/dedicated-checkout" }
   }
   let cfg = { ...defaults }
   try {
     Object.assign(cfg, JSON.parse(readFileSync(join(__dirname, "solver.config.json"), "utf8")))
   } catch {
-    console.warn(
-      "[reviewloop-solver] no worker/solver.config.json found — starting with no checkouts.\n" +
-        "[reviewloop-solver] copy worker/solver.config.example.json to worker/solver.config.json and add your repo→path map.",
-    )
-  }
-  // Env override for the checkout registry (JSON map), e.g. for CI/host injection.
-  const checkoutsEnv = process.env.REVIEWLOOP_SOLVER_CHECKOUTS
-  if (checkoutsEnv) {
-    try {
-      cfg.checkouts = { ...cfg.checkouts, ...JSON.parse(checkoutsEnv) }
-    } catch (e) {
-      console.warn(`[reviewloop-solver] ignoring invalid REVIEWLOOP_SOLVER_CHECKOUTS JSON: ${e}`)
-    }
+    // No file is fine — the defaults above are a complete config.
   }
   return cfg
 }
@@ -96,7 +85,8 @@ function expandHome(p) {
 const cfg = loadConfig()
 const CONVEX_URL = resolveConvexUrl(cfg)
 const CLAUDE_BIN = process.env.CLAUDE_BIN || cfg.claudeBin || "claude"
-const WORKER = `solver@${hostname()}`
+const HOST = hostname()
+const WORKER = `solver@${HOST}`
 const LOG_DIR = join(__dirname, "logs")
 mkdirSync(LOG_DIR, { recursive: true })
 
@@ -107,12 +97,11 @@ if (!CONVEX_URL) {
   process.exit(1)
 }
 
-// Build a case-insensitive registry: lowercased slug -> { slug (canonical), path }.
-// GitHub slugs are case-insensitive (matched the same way as convex/repos.ts).
-const CHECKOUTS = new Map()
-for (const [slug, p] of Object.entries(cfg.checkouts || {})) {
-  CHECKOUTS.set(slug.toLowerCase(), { slug, path: expandHome(p) })
-}
+// The live checkout registry for THIS host, mirrored from Convex by the
+// solverCheckouts.forHost subscription below: lowercased slug -> { slug
+// (canonical), path, instructions, id }. GitHub slugs are case-insensitive
+// (matched the same way as convex/repos.ts).
+let CHECKOUTS = new Map()
 function checkoutFor(repo) {
   return CHECKOUTS.get(repo.toLowerCase())
 }
@@ -129,7 +118,7 @@ let watchedRepos = []
 
 log(
   `solver "${WORKER}" up; convex=${CONVEX_URL} concurrency=${cfg.concurrency} ` +
-    `checkouts=${CHECKOUTS.size}`,
+    `(checkout registry: Convex solverCheckouts for host "${HOST}")`,
 )
 
 // ── GitHub issue label lifecycle ─────────────────────────────────────────────
@@ -202,21 +191,31 @@ function repoSlugFromUrl(url) {
   return m ? `${m[1]}/${m[2]}` : undefined
 }
 
-// Validate every configured checkout at startup; warn loudly, don't exit (a bad
-// entry only fails its own repo's solves, not the whole worker).
-async function validateAllCheckouts() {
-  if (CHECKOUTS.size === 0) {
-    log("⚠ no checkouts registered — every ready-for-agent issue will fail with 'no checkout'. Add them to worker/solver.config.json.")
-    return
-  }
-  for (const { slug, path } of CHECKOUTS.values()) {
-    const v = await validateCheckout(slug, path)
-    if (!v.ok) {
-      log(`⚠ checkout ${slug} -> ${path}: ${v.error}`)
+// Validate every registered checkout whenever the registry changes, and write
+// each verdict back to its Convex row so the console shows ✓/✗ on the ground
+// truth instead of a hopeful path string. Warn loudly, never exit (a bad entry
+// only fails its own repo's solves, not the whole worker). Loop-safe: the
+// write-back re-fires the subscription, but an unchanged verdict is skipped, so
+// it settles after one round trip.
+async function validateAndReport(rows) {
+  for (const row of rows) {
+    const path = expandHome(row.path)
+    const res = await validateCheckout(row.repo, path)
+    const status = res.ok ? "ok" : "invalid"
+    const detail = res.ok ? res.warnings.join("; ") || undefined : res.error
+    if (res.ok) {
+      log(`✓ checkout ${row.repo} -> ${path}${detail ? ` (warnings: ${detail})` : ""}`)
     } else {
-      const w = v.warnings.length ? ` (warnings: ${v.warnings.join("; ")})` : ""
-      log(`✓ checkout ${slug} -> ${path}${w}`)
+      log(`⚠ checkout ${row.repo} -> ${path}: ${res.error}`)
     }
+    if (row.status === status && (row.statusDetail ?? undefined) === detail) continue
+    await client
+      .mutation(api.solverCheckouts.reportStatus, {
+        id: row._id,
+        status,
+        ...(detail !== undefined ? { statusDetail: detail } : {}),
+      })
+      .catch((e) => log(`⚠ reportStatus ${row.repo} error:`, String(e)))
   }
 }
 
@@ -244,7 +243,7 @@ function branchFor(issueNumber, title) {
 // solver-specific overrides (exact branch name, Closes #N, the fix-round cap, the
 // never-merge rule), and the unattended framing. `reviewloop-feature` is a global skill, so
 // `claude -p "/reviewloop-feature …"` resolves it on this host.
-function solvePrompt(row, branch, issueBody, maxFixRounds) {
+function solvePrompt(row, branch, issueBody, maxFixRounds, instructions) {
   return `/reviewloop-feature Solve issue #${row.issueNumber} in ${row.repo} and open a PR for it.
 
 You are running UNATTENDED (no human is watching this turn) as the reviewloop
@@ -270,7 +269,181 @@ ${issueBody && issueBody.trim() ? issueBody.trim() : "(no body)"}
   leave the PR for a human even if it isn't fully clean — do not loop indefinitely.
 - **NEVER merge**, and never push to the default branch. Stop once the PR is open and
   the review has settled (clean, or the fix-round cap is reached).
-- At wrap-up, flush any out-of-scope follow-ups via \`reviewloop-suggest\` as usual.`
+- At wrap-up, flush any out-of-scope follow-ups via \`reviewloop-suggest\` as usual.${
+    instructions
+      ? `
+
+## Operator notes for this checkout
+The operator registered these repo-specific notes — follow them while building:
+
+${instructions}`
+      : ""
+  }`
+}
+
+// ── checkout provisioning ────────────────────────────────────────────────────
+// The console registers a repo with nothing prepared on disk (provision:
+// "requested"); this makes it real. Clone via `gh`, then hand the judgment work
+// to a one-shot `claude -p` setup agent in the fresh clone: install deps with
+// the repo's own package manager, find a sibling clone of the same repo on this
+// machine (matched by `git remote origin`) and copy the gitignored env files
+// from it — never inventing secret values — and follow the repo's own README
+// setup. The agent's final message is the report the console shows. Strictly
+// serial (one npm install at a time), and independent of the solve loop.
+const PROVISION_TIMEOUT_MIN = 30
+const provisioningIds = new Set()
+let provisionChain = Promise.resolve()
+
+function enqueueProvisions(rows) {
+  for (const row of rows) {
+    if (row.provision !== "requested" || provisioningIds.has(row._id)) continue
+    provisioningIds.add(row._id)
+    provisionChain = provisionChain
+      .then(() => provisionCheckout(row))
+      .catch((e) => log(`provision error ${row.repo}:`, String(e)))
+      .finally(() => provisioningIds.delete(row._id))
+  }
+}
+
+function provisionPrompt(slug, path) {
+  return `You are the reviewloop solver's checkout provisioner, running UNATTENDED in a
+fresh dedicated clone of ${slug} at ${path} (your cwd). Make this clone BUILDABLE
+so autonomous solve agents can work here. This clone is solver-owned — mutate it
+freely; NEVER modify any other clone of this repo (you may only COPY files from
+one).
+
+Do, in order:
+1. Install dependencies with the repo's own package manager (honor its lockfile:
+   package-lock.json → npm, pnpm-lock.yaml → pnpm, yarn.lock → yarn). If the
+   install fails, diagnose and retry with the smallest documented workaround
+   (e.g. --legacy-peer-deps) and remember what was needed.
+2. Gitignored files a build needs (.env.local, .env, *.local) are missing by
+   definition. Find another clone of this same repo on this machine — check
+   likely places (~/work, ~/dev, ~/projects, ~/code, ~) and confirm a candidate
+   with \`git -C <dir> remote get-url origin\` matching ${slug} — and copy the
+   gitignored env/secret files a build or test run needs from it. NEVER invent,
+   edit, or guess secret values. If no sibling clone exists, note exactly which
+   files a human must supply.
+3. Follow the repo's own README/CONTRIBUTING setup steps that a headless build
+   needs (copy *.example files to their real names, run codegen, …). Skip
+   anything requiring an interactive login or account signup.
+4. Sanity-check briefly: run the repo's typecheck or build if it has a cheap
+   one, and fix what you broke or what setup missed (e.g. missing codegen).
+
+Your final message is stored and shown to the operator in the console. Keep it a
+short report: what you installed and copied (name the source clone), any install
+workaround (as a one-line note a future build agent should follow), and whatever
+REMAINS manual — or "nothing remains — ready".`
+}
+
+async function provisionCheckout(row) {
+  const won = await client
+    .mutation(api.solverCheckouts.claimProvision, { id: row._id })
+    .catch(() => false)
+  if (!won) return
+  const slug = row.repo
+  const path = expandHome(row.path)
+  const pp = (line) =>
+    client.mutation(api.solverCheckouts.setProvisionProgress, { id: row._id, line }).catch(() => {})
+  const fail = async (error, report) => {
+    log(`✗ provision ${slug}: ${error}`)
+    await client
+      .mutation(api.solverCheckouts.finishProvision, {
+        id: row._id,
+        outcome: "failed",
+        error,
+        ...(report ? { report } : {}),
+      })
+      .catch(() => {})
+  }
+  log(`▶ provisioning ${slug} -> ${path}`)
+
+  // Clone, or adopt an existing directory if it's already the right repo.
+  if (!existsSync(path)) {
+    await pp(`Cloning ${slug}…`)
+    const cloned = await run("gh", ["repo", "clone", slug, path])
+    if (cloned.code !== 0) {
+      return fail(`clone failed: ${errorReason(cloned.err, `exit ${cloned.code}`).slice(0, 300)}`)
+    }
+  } else {
+    const remote = await run("git", ["-C", path, "remote", "get-url", "origin"])
+    const got = remote.code === 0 ? repoSlugFromUrl((remote.out || "").trim()) : undefined
+    if (!got || got.toLowerCase() !== slug.toLowerCase()) {
+      return fail(`path ${path} already exists and is not a clone of ${slug} — refusing to touch it`)
+    }
+  }
+
+  // Fast-path: a checkout that already validates with no warnings (deps + env
+  // present) needs no setup agent — hand-prepared rows land here.
+  const pre = await validateCheckout(slug, path)
+  if (pre.ok && pre.warnings.length === 0) {
+    log(`✓ provision ${slug}: already prepared`)
+    await client
+      .mutation(api.solverCheckouts.finishProvision, {
+        id: row._id,
+        outcome: "ready",
+        report: "Already prepared — nothing to do.",
+      })
+      .catch(() => {})
+    await reportVerdict(row._id, slug, path)
+    return
+  }
+
+  await pp("Running setup agent…")
+  const logFile = join(LOG_DIR, `provision-${slug.replace(/[^a-z0-9]+/gi, "-")}.log`)
+  const r = await streamClaude({
+    claudeBin: CLAUDE_BIN,
+    args: [
+      "-p",
+      provisionPrompt(slug, path),
+      "--permission-mode",
+      "bypassPermissions",
+      "--model",
+      cfg.model,
+      "--output-format",
+      "stream-json",
+      "--verbose",
+    ],
+    cwd: path,
+    env: { ...process.env, REVIEWLOOP_UNATTENDED: "1" },
+    logFile,
+    timeoutMs: PROVISION_TIMEOUT_MIN * 60 * 1000,
+    onTimeout: () => log(`⏱ provision timeout ${slug} after ${PROVISION_TIMEOUT_MIN}m — killing`),
+    onProgress: pp,
+  })
+  const report = (r.finalText || r.lastFullText || "").trim().slice(0, 4000) || undefined
+  if (r.spawnError || r.code !== 0 || r.resultIsError) {
+    return fail(
+      r.spawnError
+        ? `setup agent failed to spawn: ${r.spawnError}`
+        : `setup agent did not complete (exit ${r.code}) — see ${logFile}`,
+      report,
+    )
+  }
+
+  // The agent said done — trust, but verify on disk before calling it ready.
+  const post = await validateCheckout(slug, path)
+  if (!post.ok) return fail(`setup ran but the checkout still doesn't validate: ${post.error}`, report)
+  log(`✓ provisioned ${slug}${post.warnings.length ? ` (warnings: ${post.warnings.join("; ")})` : ""}`)
+  await client
+    .mutation(api.solverCheckouts.finishProvision, { id: row._id, outcome: "ready", report })
+    .catch(() => {})
+  await reportVerdict(row._id, slug, path)
+}
+
+// Stamp the validation verdict for one row right now — used after provisioning,
+// where the registry fingerprint hasn't changed so the subscription won't
+// re-validate on its own.
+async function reportVerdict(id, slug, path) {
+  const res = await validateCheckout(slug, path)
+  const detail = res.ok ? res.warnings.join("; ") || undefined : res.error
+  await client
+    .mutation(api.solverCheckouts.reportStatus, {
+      id,
+      status: res.ok ? "ok" : "invalid",
+      ...(detail !== undefined ? { statusDetail: detail } : {}),
+    })
+    .catch(() => {})
 }
 
 // ── claim + run loop ─────────────────────────────────────────────────────────
@@ -335,7 +508,25 @@ async function runSolve(row) {
   if (!co) {
     log(`✗ no checkout registered for ${row.repo} (#${row.issueNumber}) — failing task`)
     await finish(row, "failed", {
-      error: `no solver checkout registered for ${row.repo} on this host (add it to worker/solver.config.json)`,
+      error: `no solver checkout registered for ${row.repo} on host ${HOST} — add one from the console's Solver checkouts panel`,
+    })
+    return
+  }
+
+  // A checkout mid-provision isn't buildable yet; one whose provisioning failed
+  // may be a half-installed clone. Fail the solve with the real story instead of
+  // letting a build run (or confusingly fail) in an unprepared directory.
+  if (co.provision === "requested" || co.provision === "provisioning") {
+    log(`✗ checkout for ${row.repo} still provisioning (#${row.issueNumber}) — failing task`)
+    await finish(row, "failed", {
+      error: `the checkout for ${row.repo} is still being provisioned — retry once it's ready`,
+    })
+    return
+  }
+  if (co.provision === "failed") {
+    log(`✗ checkout provisioning failed for ${row.repo} (#${row.issueNumber}) — failing task`)
+    await finish(row, "failed", {
+      error: `checkout provisioning failed for ${row.repo} — fix it from the console's Solver checkouts panel`,
     })
     return
   }
@@ -379,7 +570,7 @@ async function runSolve(row) {
     // Fetch the issue body for the brief.
     const issueBody = await fetchIssueBody(row.repo, row.issueNumber)
 
-    const prompt = solvePrompt(row, branch, issueBody, cfg.maxFixRounds)
+    const prompt = solvePrompt(row, branch, issueBody, cfg.maxFixRounds, co.instructions)
     const ok = await spawnPrFeature(row, co.path, prompt, logFile)
 
     // Whatever worktree(s) appeared are the agent's; their branches are the actual
@@ -630,6 +821,42 @@ async function reconcile(reason) {
 }
 
 // ── subscriptions ────────────────────────────────────────────────────────────
+// The checkout registry for THIS host, live from Convex. Each update rebuilds
+// the in-memory map, re-validates every entry on disk (writing verdicts back
+// for the console), and re-pumps — so registering a checkout from the console
+// makes queued solves for that repo claimable without a restart. The
+// crash-leftover worktree sweep waits for the first registry load (it walks the
+// registered checkouts, which used to be known at import time).
+let sweptStale = false
+let registrySig = null // (repo, path) fingerprint — skips re-validating when only verdicts changed
+client.onUpdate(api.solverCheckouts.forHost, { host: HOST }, (rows) => {
+  const all = rows ?? []
+  CHECKOUTS = new Map(
+    all.map((r) => [
+      r.repo.toLowerCase(),
+      { slug: r.repo, path: expandHome(r.path), instructions: r.instructions, provision: r.provision },
+    ]),
+  )
+  // Every fire, not fingerprint-gated: a console retry (requestProvision) flips
+  // only the provision field, which the fingerprint deliberately ignores.
+  enqueueProvisions(all)
+  const sig = JSON.stringify(all.map((r) => [r.repo, r.path]).sort())
+  if (sig !== registrySig) {
+    registrySig = sig
+    if (CHECKOUTS.size === 0) {
+      log(`⚠ no checkouts registered for host "${HOST}" — every ready-for-agent issue will fail with 'no checkout'. Add them from the console's Solver checkouts panel.`)
+    } else {
+      log(`checkout registry (${CHECKOUTS.size}): ${[...CHECKOUTS.values()].map((c) => c.slug).join(", ")}`)
+    }
+    validateAndReport(all).catch((e) => log("checkout validation error:", String(e)))
+  }
+  if (!sweptStale) {
+    sweptStale = true
+    sweepStaleWorktrees().catch((e) => log("sweep error:", String(e)))
+  }
+  pump()
+})
+
 client.onUpdate(api.solveTasks.claimable, {}, (rows) => {
   latestClaimable = rows
   pump()
@@ -652,9 +879,10 @@ if (cfg.fallbackReconcileMin > 0) {
   setInterval(() => reconcile("fallback"), cfg.fallbackReconcileMin * 60 * 1000)
 }
 
-// One-time startup: validate checkouts + sweep crash leftovers.
-validateAllCheckouts()
-sweepStaleWorktrees().catch((e) => log("sweep error:", String(e)))
+// Announce this host so the console can offer it in the checkout editor even
+// before any checkout is registered for it. (Validation + the stale-worktree
+// sweep run off the registry subscription above, once it first loads.)
+client.mutation(api.solverCheckouts.hello, { host: HOST }).catch((e) => log("hello error:", String(e)))
 
 async function shutdown() {
   log("shutting down")

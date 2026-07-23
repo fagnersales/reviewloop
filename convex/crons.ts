@@ -43,4 +43,14 @@ crons.interval(
   {},
 )
 
+// Crash recovery for checkout provisioning: fail any "provisioning" row whose
+// solver died mid-clone/setup (see PROVISION_STALE_MS in solverCheckouts.ts),
+// so the console shows the failure instead of a spinner forever.
+crons.interval(
+  "fail stale checkout provisions",
+  { minutes: 15 },
+  internal.solverCheckouts.failStaleProvisions,
+  {},
+)
+
 export default crons

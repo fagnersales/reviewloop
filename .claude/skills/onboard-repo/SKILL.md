@@ -19,7 +19,7 @@ picks up its PRs) and, unless `--review-only`, **solvable** (the solver builds i
 | Layer | Where | Reactive? |
 |---|---|---|
 | **In the system** — watch list + GitHub webhook | Convex `watchedRepos` + the repo's webhook | watch list yes; webhook is a one-time GitHub resource |
-| **Solvable on this host** — a dedicated checkout | `worker/solver.config.json` (local, gitignored) | **no** — read once at solver startup, so it needs a restart |
+| **Solvable on this host** — a dedicated checkout | the clone on disk + a Convex `solverCheckouts` row (keyed by hostname) | **yes** — the solver subscribes, so no restart |
 
 A repo needs the first layer to be reviewed, and **both** layers before the solver
 will build for it. The whole skill is **idempotent** — every step checks current
@@ -27,10 +27,11 @@ state first, so re-running on a partially-configured repo just completes it.
 
 ## Where to run
 
-All `npx convex …`, `.env.local` reads, and `worker/solver.config.json` edits run
-from the **reviewloop repo root** — the checkout this skill lives in (three
-directories up from this SKILL.md). `cd` there first (or use absolute paths). The *target* repo (`owner/name`) is only ever touched through `gh --repo`
-and the clone in step 3 — never checked out into reviewloop.
+All `npx convex …` calls and `.env.local` reads run from the **reviewloop repo
+root** — the checkout this skill lives in (three directories up from this
+SKILL.md). `cd` there first (or use absolute paths). The *target* repo
+(`owner/name`) is only ever touched through `gh --repo` and the clone in step 3 —
+never checked out into reviewloop.
 
 ## Prerequisites
 
@@ -112,70 +113,53 @@ gh api repos/owner/name/hooks \
 
 **If `--review-only`:** skip to step 5.
 
-### 3. Layer 2 — make it solvable (dedicated checkout)
+### 3. Layer 2 — make it solvable (register; the solver provisions)
 
 The solver builds in a **real** checkout because a build needs gitignored artifacts
-git doesn't carry (`.env.local`, `node_modules`, caches). Use a **dedicated**,
-solver-owned clone — never the user's personal one (the reviewloop-feature worktree symlinks
-`node_modules` back to the parent, so a solve running `npm install` would mutate
-their deps, and stale worktrees would litter a repo they use).
+git doesn't carry (`.env.local`, `node_modules`, caches). Registering is now the
+whole step: the solver **provisions the checkout itself** — clones a dedicated copy
+via `gh`, then runs a one-shot setup agent that installs deps, finds the user's
+existing clone of the same repo (matched by `git remote origin`) and copies its
+gitignored env files (never inventing secret values), and follows the repo's README
+setup. You do NOT clone or install anything by hand.
+
+Register under **this machine's** hostname (must match what the solver reports,
+suffix included). Omitting a custom path is fine — the solver convention is
+`~/solver-checkouts/<name>`:
 
 ```bash
-DEST=~/solver-checkouts/<name>            # pick a dedicated path; confirm with the user
-gh repo clone owner/name "$DEST"
+HOST=$(node -e 'console.log(require("os").hostname())')
+npx convex run solverCheckouts:upsert \
+  "{\"host\":\"$HOST\",\"repo\":\"owner/name\",\"path\":\"~/solver-checkouts/<name>\"}"
+# → "saved" | "invalid" | "full"      (re-running just updates the row)
 ```
 
-Then make it **buildable** — do what the repo needs, mirroring its own README/setup:
+The row starts as `provision: "requested"`; a running solver on that host picks it
+up live (no restart), streams progress into `provisionProgress`, and finishes as
+`ready` (with a `provisionReport` of what it copied and what remains manual) or
+`failed` (`provisionError`). If it registers against an already-prepared clone, the
+provisioner detects that and no-ops straight to ready.
 
-- Node project: `cd "$DEST" && npm install` (or pnpm/yarn per its lockfile).
-- If the build needs gitignored secrets/a live backend URL, copy them from the
-  user's existing clone: `cp <their-clone>/.env.local "$DEST"/.env.local`. Ask where
-  their clone is if you don't know; **don't invent secret values.**
+`instructions` is an optional extra field on the same upsert — free text the solver
+injects into every solve prompt for this repo. Add it when the repo has a setup
+quirk a build agent would otherwise trip on ("`npm install` needs
+`--legacy-peer-deps`", "copy `X.example` to `X` before running tests"). Check the
+finished `provisionReport` — when it names an install workaround, offer to save it
+as `instructions` so future solves inherit it.
 
-This step varies per repo — if you're unsure what it needs to build, ask rather than
-guessing. A checkout that can't build will make every solve fail.
+The user can do all of this from the console instead — **Solver checkouts** on the
+nav rail (type the repo, Save — path and provisioning are automatic) — and edit it
+there later; mention that rather than making them come back to an agent.
 
-### 4. Register the checkout + restart the solver
+### 4. Solver process
 
-**4a. Register it** in `worker/solver.config.json` (create it from
-`worker/solver.config.example.json` if absent). Add/merge the mapping under
-`checkouts`, keep the rest, and keep it valid JSON:
-
-```jsonc
-{
-  "checkouts": {
-    "owner/name": "~/solver-checkouts/<name>"   // ~ expands; slugs case-insensitive
-  }
-}
-```
-
-Sanity-check the path before declaring success (these mirror the solver's own
-startup validation — catch a bad entry now, not at solve time):
+Provisioning and solving both need a solver **running on this host**. Registering
+alone just queues the request:
 
 ```bash
-git -C "$DEST" rev-parse --git-dir >/dev/null   # is a git repo
-git -C "$DEST" remote get-url origin            # origin must resolve to owner/name
-test -f "$DEST/.env.local" || echo "warn: no .env.local (a build needing secrets may fail)"
-test -d "$DEST/node_modules" || echo "warn: no node_modules (run the install step)"
+pgrep -fl "worker/solver.mjs" ||
+  nohup node worker/solver.mjs >> worker/solver.out 2>&1 < /dev/null & echo $! > worker/solver.pid
 ```
-
-**4b. Restart the solver — this is the gotcha.** `solver.config.json` is read **once
-at startup** (no file-watch), so the new checkout only takes effect after a restart.
-Check what's running and act accordingly — **don't blindly kill a solve in flight:**
-
-```bash
-pgrep -fl "worker/solver.mjs"                   # is a solver running?
-npx convex run solveTasks:board   # any in-flight solves? (the "solving" bucket)
-```
-
-- **Not running:** offer to start one in the background:
-  `nohup node worker/solver.mjs >> worker/solver.out 2>&1 < /dev/null & echo $! > worker/solver.pid`
-- **Running, no solve in flight:** restart it (kill the old pid / Ctrl-C, then start
-  as above). If it's a foreground `npm run solver` in another terminal, you can't
-  reach it — tell the user to restart it.
-- **Running with a solve in flight:** do **not** restart — tell the user the new
-  checkout takes effect after their current solve finishes and they restart, or they
-  can restart now to interrupt it. Let them choose.
 
 ### 5. Verify + report
 
@@ -185,14 +169,23 @@ Confirm what actually took:
 curl -fsS "$SITE/health"                         # → {"ok":true}
 npx convex run repos:list          # includes owner/name
 gh api repos/owner/name/hooks --jq '.[].events'  # includes pull_request + issues (if a hook was set)
+npx convex run solverCheckouts:board              # the row: provision lifecycle +
+                                                  # "status" validation verdict
 ```
+
+Wait for `provision` to leave `requested`/`provisioning` (cloning + setup takes a
+few minutes; poll the board). `ready` + `status: "ok"` = solvable (`statusDetail`
+carries non-fatal warnings; read `provisionReport` for what remains manual —
+usually nothing, sometimes a secret file no sibling clone had). `failed` →
+`provisionError` has the reason; fix and retry via
+`npx convex run solverCheckouts:requestProvision '{"id":"<rowId>"}'`.
 
 Then report concisely:
 
 - ✅ **Reviewed:** watched + webhook (or "via reconcile, no webhook"). New PRs are
   reviewed automatically; `reviewloop-await`/`reviewloop-ack` work against it.
-- ✅ **Solvable** (unless review-only): checkout registered at `<path>`, solver
-  (re)started — or the restart the user still needs to do.
+- ✅ **Solvable** (unless review-only): registered for this host, provisioned by the
+  solver (relay the provisionReport — especially anything left manual), verdict ok.
 - **To trigger a solve:** label any open issue **`ready-for-agent`** (a human gate —
   via the triage flow or `gh issue edit <n> --repo owner/name --add-label ready-for-agent`).
   The solver claims it, spawns `/reviewloop-feature` in the checkout, opens a PR (`Closes #N`),

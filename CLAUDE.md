@@ -111,10 +111,25 @@ free. **The solver never merges** — a human does; the `pull_request` merge web
 flips the solve task `pr-opened → done`.
 
 Operator/agent notes if you touch this:
-- The checkout registry is **host-specific local config** (`worker/solver.config.json`,
-  gitignored — template: `worker/solver.config.example.json`), **not** Convex. A
-  watched repo with no registered checkout has its solve **failed fast** with a clear
-  reason, never silently stalled.
+- The checkout registry lives in **Convex** (`solverCheckouts`, edited from the
+  console's **Solver checkouts** rail panel), keyed by **hostname** so paths stay
+  host-specific — each solver subscribes only to its own hostname's rows, picks
+  changes up live (no restart), and writes a validation verdict back per row
+  (the ✓/✗ dot in the panel). A row can carry free-text **instructions** the
+  solver injects into every solve prompt for that repo ("copy these .example
+  files", …). `worker/solver.config.json` is now optional tuning only — no
+  checkout map, no fallback. A watched repo with no registered checkout has its
+  solve **failed fast** with a clear reason, never silently stalled.
+- New rows are **provisioned by the solver itself** (`provision: requested →
+  provisioning → ready | failed`): it clones via `gh` to the registered path
+  (default `~/solver-checkouts/<name>`), then spawns a one-shot `claude -p`
+  setup agent that installs deps per the repo's lockfile, finds a sibling clone
+  by matching `git remote origin` and copies its gitignored env files (never
+  inventing secrets), and follows the repo's README setup. Progress streams to
+  `provisionProgress`; the agent's report lands in `provisionReport`; a cron
+  fails stale `provisioning` rows. Registering an already-prepared path no-ops
+  straight to ready, and solves against a not-yet-ready checkout fail fast with
+  the provisioning state as the reason.
 - Every autonomous spawn sets **`REVIEWLOOP_UNATTENDED=1`** (the contract that tells
   `reviewloop-feature` it's headless — flush follow-ups via `reviewloop-suggest`, skip human
   chatter) and assigns a deterministic branch `solve/issue-<N>-<slug>` so the worker

@@ -47,6 +47,34 @@ npm install               # deps may have changed
 npx convex dev --once     # push updated backend functions to their deployment
 ```
 
+## 3b. One-time migrations
+
+Check these against what step 2 pulled in; each is a no-op once done.
+
+**Solver checkout registry moved to Convex.** The repo→path map used to live in
+`worker/solver.config.json` under `checkouts`; it is now a Convex table
+(`solverCheckouts`) keyed by hostname, edited from the console's **Solver
+checkouts** rail panel. A leftover `checkouts` key in the JSON is now **ignored**,
+so a solver whose map wasn't migrated fails every solve with "no solver checkout
+registered". If that key is present, migrate each entry, then drop the key:
+
+Print one ready-to-run command per old entry, then run them:
+
+```bash
+node -e '
+  const {hostname} = require("os")
+  const map = require("./worker/solver.config.json").checkouts || {}
+  for (const [repo, path] of Object.entries(map))
+    console.log(`npx convex run solverCheckouts:upsert ${JSON.stringify(JSON.stringify({host: hostname(), repo, path}))}`)
+'
+```
+
+Then remove the now-dead `checkouts` key from `worker/solver.config.json` (leave the
+other keys — they are still live tuning). Verify with
+`npx convex run solverCheckouts:board`; a running solver stamps each row `ok` or
+`invalid` within seconds. The user can also just re-enter the paths in the console
+panel — same result.
+
 ## 4. Restart the running pieces
 
 Check nothing is mid-review before killing the worker:

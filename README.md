@@ -63,8 +63,9 @@ GitHub PR event ──HTTPS──▶ Convex /github/webhook  (verify X-Hub-Signa
   only host settings (model, concurrency, clone dir).
 - `worker/solver.mjs` — a separate long-lived subscriber that runs **solves**:
   spawns `/reviewloop-feature` against a configured checkout to build a `ready-for-agent`
-  issue and open a PR. Its checkout registry is `worker/solver.config.json`
-  (host-specific, gitignored). See [The autonomous solver](#the-autonomous-solver-issue--pr).
+  issue and open a PR. Its checkout registry lives in Convex (`solverCheckouts`,
+  keyed by hostname, edited from the console). See
+  [The autonomous solver](#the-autonomous-solver-issue--pr).
 - `src/` — the dashboard.
 - `site/` — the public homepage (static, deployed to Vercel; no build step).
 
@@ -170,8 +171,10 @@ loop → auto-fix → stop clean). The solver just: find a ready-for-agent issue
 clone):** *building* needs what git does not carry — `.env.local` (secrets, the live
 backend URL), `node_modules`, build caches — so a solve must run in a **real,
 configured local checkout**. Paths are host-specific, so the repo→checkout registry
-is local config (`worker/solver.config.json`), never Convex. A long solve (tens of
-minutes to hours) also gets its own process so it never starves the fast reviews.
+is keyed by **hostname**: it lives in Convex (`solverCheckouts`) and is edited from
+the console, but each solver only ever sees its own machine's rows. A long solve
+(tens of minutes to hours) also gets its own process so it never starves the fast
+reviews.
 
 ### Two human gates protect the cascade
 
@@ -221,28 +224,33 @@ triage picker). The `claim` itself is also guarded server-side by the atomic Con
    solver's reconcile (`gh issue list --label ready-for-agent`) catches labels even
    without the webhook; the webhook just makes it instant.
 
-2. **Register a checkout per solvable repo.** Copy the template and fill in the
-   map (paths are host-specific, so the file is gitignored):
+2. **Register a checkout per solvable repo — the solver prepares it itself.** In
+   the console: **Solver checkouts** on the nav rail → `+` under your hostname →
+   type `owner/name`, leave the path blank (it defaults to
+   `~/solver-checkouts/<name>`), Save. The solver on that host picks the row up
+   live over its subscription — **no restart** — and **provisions** it: clones via
+   `gh`, then runs a one-shot `claude -p` setup agent in the fresh clone that
+   installs deps with the repo's own package manager, **finds your existing clone
+   of the same repo** (matched by `git remote origin`) **and copies its gitignored
+   env files** (never inventing secret values), and follows the repo's README
+   setup. Live progress streams to the row; the agent's report (what it copied,
+   what — if anything — remains manual) lands in the row's editor, and the ✓/✗
+   validation dot reflects the on-disk result.
 
-   ```bash
-   cp worker/solver.config.example.json worker/solver.config.json
-   ```
+   Checkouts are **dedicated, solver-owned** clones — never your personal one. The
+   `reviewloop-feature` worktree symlinks `node_modules` back to the parent, so a solve
+   that runs `npm install` would mutate *your* deps, and stale worktrees would
+   litter a repo you actively use. (You can still prepare a clone by hand and
+   register its path — the provisioner detects a ready checkout and no-ops.)
 
-   Use **dedicated, solver-owned** checkouts — not your personal clones. The
-   `reviewloop-feature` worktree symlinks `node_modules` back to the parent, so a solve that
-   runs `npm install` would mutate *your* deps, and stale worktrees would litter a
-   repo you actively use. One-time per repo:
-
-   ```bash
-   gh repo clone <owner/name> ~/solver-checkouts/<name>
-   cd ~/solver-checkouts/<name> && npm install && cp <your-clone>/.env.local .env.local
-   ```
-
-   Then add `"owner/name": "~/solver-checkouts/<name>"` under `checkouts`. A
-   `ready-for-agent` issue on a **watched** repo with **no** registered checkout is
-   claimed and **failed with a clear reason** (never silently stalled) — two gates:
-   Convex `watchedRepos` = "in the system", the checkout registry = "solvable on
-   this host".
+   The optional free-text **instructions** field on a row is injected into every
+   solve prompt for that repo ("`npm install` needs `--legacy-peer-deps`", "refresh
+   env with `vercel env pull`", …). Secrets are never stored in Convex — the
+   registry holds only the pointer and the provisioner only ever *copies* env files
+   between clones on your own machine. A `ready-for-agent` issue on a **watched**
+   repo with **no** registered checkout is claimed and **failed with a clear
+   reason** (never silently stalled) — two gates: Convex `watchedRepos` = "in the
+   system", the checkout registry = "solvable on this host".
 
 3. **Run it** (a separate process from the review worker):
 
@@ -251,15 +259,20 @@ triage picker). The `claim` itself is also guarded server-side by the atomic Con
    # or background: nohup node worker/solver.mjs >> worker/solver.out 2>&1 < /dev/null &
    ```
 
-   At startup it validates every configured checkout (path exists, is a git repo,
-   `origin` matches the mapped slug; warns on missing `.env.local`/`node_modules`)
-   and sweeps any stale `solve/issue-*` worktrees a crash left behind.
+   It announces its hostname to Convex (so the console can offer it in the checkout
+   editor), then validates every checkout registered for that host — path exists, is
+   a git repo, `origin` matches the mapped slug; warns on missing
+   `.env.local`/`node_modules` — writing each verdict back to its row. It re-validates
+   whenever you edit the registry, and sweeps stale `solve/issue-*` worktrees a crash
+   left behind.
 
 ### Config (`worker/solver.config.json`)
 
+Optional — every key below has a working default, and the **checkout registry is
+not here** (it's in Convex, edited from the console).
+
 | key | meaning |
 | --- | --- |
-| `checkouts` | **the registry** — `{ "owner/name": "/path" }`; `~` expands, slugs match case-insensitively |
 | `convexUrl` | deployment URL; empty = read `VITE_CONVEX_URL` from `.env.local` |
 | `model` | model for the `claude -p` solve (default `opus`) |
 | `concurrency` | max simultaneous solves (default **1** — serial; building concurrently risks port/`npm install` collisions) |
@@ -267,8 +280,7 @@ triage picker). The `claim` itself is also guarded server-side by the atomic Con
 | `maxFixRounds` | cap the internal auto-fix rounds (default 3) before stopping with the PR open |
 | `fallbackReconcileMin` | slow `gh issue list` safety reconcile; `0` to disable (default 20) |
 
-Override the checkout map via the `REVIEWLOOP_SOLVER_CHECKOUTS` env var (JSON); other env:
-`REVIEWLOOP_CONVEX_URL`, `CLAUDE_BIN`. The solve task lifecycle is
+Env: `REVIEWLOOP_CONVEX_URL`, `CLAUDE_BIN`. The solve task lifecycle is
 `queued → solving → pr-opened → done | failed` (the `pull_request` merge webhook
 flips `pr-opened → done`, closing the issue → solve → PR lineage). Every autonomous
 spawn sets `REVIEWLOOP_UNATTENDED=1`, the contract that tells `reviewloop-feature` it's headless.

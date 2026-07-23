@@ -18,6 +18,7 @@ import type * as ruleDrafts from "../ruleDrafts.js";
 import type * as rules from "../rules.js";
 import type * as settings from "../settings.js";
 import type * as solveTasks from "../solveTasks.js";
+import type * as solverCheckouts from "../solverCheckouts.js";
 import type * as suggestedIssues from "../suggestedIssues.js";
 
 import type {
@@ -37,6 +38,7 @@ declare const fullApi: ApiFromModules<{
   rules: typeof rules;
   settings: typeof settings;
   solveTasks: typeof solveTasks;
+  solverCheckouts: typeof solverCheckouts;
   suggestedIssues: typeof suggestedIssues;
 }>;
 

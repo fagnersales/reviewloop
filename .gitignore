@@ -17,3 +17,4 @@ worker/logs/
 .playwright-mcp/
 .vercel
 worker.log
+.composer/

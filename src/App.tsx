@@ -54,6 +54,7 @@ import { PhoneAccess } from "./ui/PhoneAccess"
 import { HouseRules } from "./ui/HouseRules"
 import { ReviewerSettings } from "./ui/ReviewerSettings"
 import { AutoReview } from "./ui/AutoReview"
+import { SolverCheckouts } from "./ui/SolverCheckouts"
 import { MobileApp } from "./mobile/MobileApp"
 import { useReadOnly } from "./read-only"
 import { useView } from "./lib/view"
@@ -1133,6 +1134,7 @@ export default function App() {
         <HouseRules />
         <ReviewerSettings />
         <AutoReview />
+        <SolverCheckouts />
         <PhoneAccess />
       </nav>
 

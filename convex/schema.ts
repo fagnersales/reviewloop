@@ -190,6 +190,61 @@ export const suggestedIssueFields = {
   triageAttempts: v.optional(v.number()),
 }
 
+// ── solver checkout registry ─────────────────────────────────────────────────
+// Where a solve is allowed to run: a repo → local-path map, keyed by HOST so the
+// registry can live in Convex (edited from the console) without breaking the
+// "paths are host-specific" invariant — each solver subscribes only to its own
+// hostname's rows and ignores the rest. The row is just the *pointer*; the real
+// requirement (a clone with node_modules + .env.local) still has to exist on the
+// machine, so the solver validates each row on the ground and writes the verdict
+// back here for the console to show.
+//   ok      : path exists, is a git clone of the mapped repo (statusDetail may
+//             carry non-fatal warnings, e.g. "no .env.local")
+//   invalid : unusable — statusDetail has the reason; solves for it fail fast
+//   (absent): not yet validated by a live solver on that host
+export const checkoutStatus = v.union(v.literal("ok"), v.literal("invalid"))
+
+// Autonomous provisioning of the checkout itself — the console registers a repo
+// with nothing prepared on disk, and the solver on that host makes it real:
+// clone via `gh`, then a one-shot `claude -p` setup agent (install deps, copy
+// gitignored env files from a sibling clone of the same repo found by matching
+// `git remote origin`, follow the repo's own README setup). Exactly the
+// intent-queue idiom of reviews/solves, in miniature:
+//   requested    : the console asked; awaiting a solver on that host
+//   provisioning : the solver claimed it and is cloning / running setup
+//   ready        : prepared and validated — solvable
+//   failed       : clone/setup/validation failed (provisionError has the reason)
+// Absent = registered by hand against an already-prepared path (or pre-dates
+// this field); never touched by the provisioner.
+export const provisionState = v.union(
+  v.literal("requested"),
+  v.literal("provisioning"),
+  v.literal("ready"),
+  v.literal("failed"),
+)
+
+export const solverCheckoutFields = {
+  host: v.string(), // os.hostname() of the machine that owns the path
+  repo: v.string(), // "owner/name"
+  path: v.string(), // local checkout path on that host (~ allowed)
+  // Free-text operator notes injected into the solve prompt — per-repo setup
+  // quirks the agent should know ("copy these .example files you'll need for
+  // debugging", "tests need the emulator running", …).
+  instructions: v.optional(v.string()),
+  updatedAt: v.number(),
+  // validation verdict, written back by the solver (see checkoutStatus above)
+  status: v.optional(checkoutStatus),
+  statusDetail: v.optional(v.string()),
+  validatedAt: v.optional(v.number()),
+  // autonomous provisioning lifecycle (see provisionState above)
+  provision: v.optional(provisionState),
+  // a one-line "what the provisioner is doing right now", streamed while provisioning
+  provisionProgress: v.optional(v.string()),
+  // the setup agent's final report (what it installed/copied, what stays manual)
+  provisionReport: v.optional(v.string()),
+  provisionError: v.optional(v.string()),
+}
+
 // ── autonomous solver (issue → PR) ───────────────────────────────────────────
 // A `solveTasks` row is the third half of the loop: when a GitHub issue carries
 // the `ready-for-agent` label (set by the follow-ups gate 2, or manually via the
@@ -438,6 +493,20 @@ export default defineSchema({
     .index("by_source_pr", ["repo", "sourcePrNumber"])
     // idempotency: the `suggest` mutation collapses a re-proposal onto its row
     .index("by_dedup", ["dedupKey"]),
+
+  // The solver checkout registry — see solverCheckoutFields. Owned by the
+  // console's editor, read live by each solver via forHost (its own hostname's
+  // rows only). Config-scale, bounded by solverCheckouts.ts caps.
+  solverCheckouts: defineTable(solverCheckoutFields).index("by_host", ["host"]),
+
+  // Solver hosts that have ever announced themselves (solverCheckouts.hello on
+  // startup) — how the console knows which hostnames exist to register
+  // checkouts under, even before a host has any. lastSeenAt is the last
+  // startup, not a heartbeat — it dates the host, it doesn't prove liveness.
+  solverHosts: defineTable({
+    host: v.string(),
+    lastSeenAt: v.number(),
+  }),
 
   // Autonomous solve tasks — see solveTaskFields.
   solveTasks: defineTable(solveTaskFields)
